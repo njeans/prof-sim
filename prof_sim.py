@@ -221,7 +221,6 @@ def optimal_arbitrage_algebra(chain1, chain2, prefs, attacker):
 
 def optimal_arbitrage_search(chain1, chain2, prefs, attacker):
     min_b = .01
-    max_b = chain1.accounts[attacker][1]+chain2.accounts[attacker][1]
     
     if prefs[0] < prefs[1]: #todo fractional preferences?
         tokenTrade = 'A'
@@ -236,17 +235,20 @@ def optimal_arbitrage_search(chain1, chain2, prefs, attacker):
         chainA = chain1
         chainB = chain2
 
-    if tokenTrade == 'A':
-        chainB.transfer(attacker, chainA.accounts[attacker][0], chainA, 'B')
+    if tokenTrade == 'A': #transfer tokens to chain we are selling to
+        max_b = chain1.accounts[attacker][1]+chain2.accounts[attacker][1]
+        chainB.transfer(attacker, chainA.accounts[attacker][1], chainA, 'B')
     else:
-        chainB.transfer(attacker, chainA.accounts[attacker][1], chainA, 'A')
+        max_b = chain1.accounts[attacker][0]+chain2.accounts[attacker][0]
+        chainB.transfer(attacker, chainA.accounts[attacker][0], chainA, 'A')
 
     c1 = copy.deepcopy(chainA) 
     c2 = copy.deepcopy(chainB)
         
     tx_arb1 = create_swap(attacker, 0,0)
     tx_arb2 = create_swap(attacker, 0,0)
-
+    last_successful_tx1 = tx_arb1
+    last_successful_tx2 = tx_arb2
     while not np.isclose(c1.price(tokenTrade), c2.price(tokenTrade)):
         c1 = copy.deepcopy(chainA) 
         c2 = copy.deepcopy(chainB)
@@ -260,18 +262,23 @@ def optimal_arbitrage_search(chain1, chain2, prefs, attacker):
         else:
             tx_arb1 = create_swap(attacker, mid_b, 0)
             amtA = pool_swap(c2.poolA, c2.poolB, mid_b)
-            tx_arb2 = create_swap(attacker, -amtA, 0)           
-        c1.apply(tx_arb1, debug=False)
-        c2.apply(tx_arb2, debug=False)
+            tx_arb2 = create_swap(attacker, -amtA, 0)
+        try:    
+            c1.apply(tx_arb1, debug=False)
+            c2.apply(tx_arb2, debug=False)
+            last_successful_tx1 = tx_arb1
+            last_successful_tx2 = tx_arb2
+        except ExecutionException:
+            pass
         if c1.price(tokenTrade) > c2.price(tokenTrade):
             min_b = mid_b
         else:
             max_b = mid_b
         # print("amtB", mid_b, "c1", c1.price(tokenTrade), "c2", c2.price(tokenTrade), np.isclose(c1.price(tokenTrade), c2.price(tokenTrade)))
     if switch_chains:
-        return tx_arb2, tx_arb1
+        return last_successful_tx2, last_successful_tx1
     else:
-        return tx_arb1, tx_arb2
+        return last_successful_tx1, last_successful_tx2
 
 # The party tries to trade, in the direction of the top-of-block price
 def make_trade(chain, sndr,prefs, portf):
