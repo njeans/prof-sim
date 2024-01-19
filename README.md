@@ -1,6 +1,6 @@
 # Prof Simulations
 
-### Edit Simulation in [prof_sim.py](prof_sim.py#1557)
+### Edit Simulation in [prof_sim.py](prof_sim.py#L1556)
 
 Example: 
 
