@@ -1325,6 +1325,21 @@ def scenario_arbitrage_test_search():
     assert np.isclose(c1_4.price('A'), c2_4.price('A'))
 
 def scenario_arbitrage(random_type='same', num_intervals=10, num_iters=10, debug=False, num_prof_users=2, mevshare_percentage=.9, min_volatility=0.01, max_volatility=5):
+    """Run arbitrage simulation
+
+    Args:
+        random_type ('same' or 'rndm', optional): whether each user has a different random ('rndm') preference or the 'same' random preference. Defaults to 'same'.
+        num_intervals (int, optional): number of volatilities to try. Defaults to 10.
+        num_iters (int, optional): number of iterations of each volatility. Defaults to 10.
+        debug (bool, optional): print extra debug information. Defaults to False.
+        num_prof_users (int, optional): number of users or PROF/MEVShare. Defaults to 2.
+        mevshare_percentage (float, optional): percentage of profit returned to MEVShare users. Defaults to .9.
+        min_volatility (float, optional): minimum volatility. Defaults to 0.01.
+        max_volatility (float, optional): maximum volatility. Defaults to 5.
+
+    Returns:
+        None
+    """
     np.random.seed(0)
     num_block_users = 0
 
@@ -1539,10 +1554,6 @@ if __name__ == "__main__":
     # scenario_arbitrage_test_search()
     # scenario_arbitrage_test_alg()
 
-    # scenario_arbitrage()
-    # scenario_arbitrage(random_type='same', num_intervals=1, num_iters=1, debug= True)
-    # scenario_arbitrage(random_type='same', num_intervals=10, num_iters=100, debug= False, num_prof_users=4, mevshare_percentage=.7)
-    # scenario_arbitrage(random_type='same', num_intervals=10, num_iters=100, debug= False, num_prof_users=3, mevshare_percentage=.95)
-    # scenario_arbitrage(random_type='same', num_intervals=10, num_iters=100, debug= False, num_prof_users=4, mevshare_percentage=.9)
-    scenario_arbitrage(random_type='same', num_intervals=3, num_iters=1, debug= False, num_prof_users=2, mevshare_percentage=.9)
+    scenario_arbitrage(random_type='rndm', num_intervals=10, num_iters=100, debug= False, num_prof_users=3, mevshare_percentage=.9)
+
     plt.show()
