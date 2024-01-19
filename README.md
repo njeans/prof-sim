@@ -1,10 +1,11 @@
 # Prof Simulations
 
-### Edit Simulation in [prof-sim.py](prof-sim.py#1557)
+### Edit Simulation in [prof_sim.py](prof_sim.py#1557)
 
 Example: 
 
 `scenario_arbitrage(random_type='rndm', num_intervals=10, num_iters=100, debug= False, num_prof_users=3, mevshare_percentage=.9`
+
 ### Options for 'scenario_arbitrage'
 * random_type ('same' or 'rndm', optional): whether each user has a different random ('rndm') preference or the 'same' random preference. Defaults to 'same'.
 * num_intervals (int, optional): number of volatilities to try. Defaults to 10.
@@ -19,5 +20,5 @@ debug (bool, optional): print extra debug information. Defaults to False.
 Run with
 
 ```
-python prof-sim.py
+python prof_sim.py
 ```
