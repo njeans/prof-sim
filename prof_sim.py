@@ -1,5 +1,6 @@
 import math
 import random
+import os
 import numpy as np
 import copy
 import itertools
@@ -62,13 +63,13 @@ class Chain():
                 amtA = tx['qty']
                 if self.static is None:
                     amtB = pool_swap(self.poolA, self.poolB, (1.0-self.fee) * amtA)
+                    require(self.poolB - amtB >= 0,'exhausts pool')
                 else:
                     amtB = amtA/self.static
 
                 require(account[0] >= amtA, f'not enough balance for trade {tx} {amtA} account {account}')
                 require(amtB >= 0)
                 require(amtB >= -tx['rsv'] or tx['rsv'] == 0, f"slippage exceeded amtB:{amtB}, -rsv:{-tx['rsv']}")
-                require(self.poolB - amtB >= 0, 'exhausts pool')
 
                 if debug:
                     print(self.chainid,"\t",tx['sndr'], "sell", amtA, "of A and gets", amtB, "of B with slippage", -tx['rsv'], "<=", amtB)
@@ -81,13 +82,13 @@ class Chain():
                 amtB = -tx['qty']
                 if self.static is None:
                     amtA = pool_swap(self.poolB, self.poolA, amtB)
+                    require(self.poolA + amtA >= 0, 'exhausts pool')
                 else:
                     amtA = amtB*self.static
 
                 require(account[1] >= amtB, f'not enough balance for trade {tx} {amtB} account {account}')
                 require(amtA >= 0)
                 require(amtA >= tx['rsv'] or tx['rsv'] == 0, f"slippage exceeded amtA:{amtA}, rsv:{tx['rsv']}")
-                require(self.poolA + amtA >= 0, 'exhausts pool')
 
                 if debug:
                     print(self.chainid,"\t",tx['sndr'], "sell", amtB, "of B and gets", amtA, "of A with slippage",  tx['rsv'], "<=" , amtA)
@@ -190,8 +191,12 @@ def confidence_interval(m,s,n,alpha=.025, z=1.96):
     return ci
 
 
-def limited_random_walk_range(max_step, min_step, num_points, direction_foo, random_foo):
-    # print("max", max_step, "min", min_step, "num", num_points)
+def limited_random_walk_range(max_step, min_step, num_points, direction_foo, random_foo, num_users=None, vol=None):
+    if num_users is None:
+        num_users = num_points
+    if vol is None:
+        vol = max_step
+    print("max", max_step, "min", min_step, "num", num_points)
     assert(max_step >= 1.0)
     assert(min_step <= 1.0)
     points = []
@@ -213,14 +218,18 @@ def limited_random_walk_range(max_step, min_step, num_points, direction_foo, ran
     global random_walk_stats
     if "limited_random_walk_range" not in random_walk_stats:
         random_walk_stats["limited_random_walk_range"] = {"measuring": "misses", "index": "num_users"}
-    if str(num_points) not in random_walk_stats["limited_random_walk_range"]:
-        random_walk_stats["limited_random_walk_range"][str(num_points)] = {}
-    if str(max_step) not in random_walk_stats["limited_random_walk_range"][str(num_points)]:
-        random_walk_stats["limited_random_walk_range"][str(num_points)][str(max_step)] = []
-    random_walk_stats["limited_random_walk_range"][str(num_points)][str(max_step)].append(misses)    
+    if str(num_users) not in random_walk_stats["limited_random_walk_range"]:
+        random_walk_stats["limited_random_walk_range"][str(num_users)] = {}
+    if str(vol) not in random_walk_stats["limited_random_walk_range"][str(num_users)]:
+        random_walk_stats["limited_random_walk_range"][str(num_users)][str(vol)] = []
+    random_walk_stats["limited_random_walk_range"][str(num_users)][str(vol)].append(misses)    
     return points
         
-def limited_random_walk_scaled(num_points, direction_foo, random_foo, scale):
+def limited_random_walk_scaled(num_points, direction_foo, random_foo, scale, num_users=None, vol=None):
+    if num_users is None:
+        num_users = num_points
+    if vol is None:
+        vol = scale
     points = []
     step = 0
     max_step = 0
@@ -238,13 +247,53 @@ def limited_random_walk_scaled(num_points, direction_foo, random_foo, scale):
     global random_walk_stats
     if "limited_random_walk_scaled" not in random_walk_stats:
         random_walk_stats["limited_random_walk_scaled"] = {"measuring": "max_step", "index": "num_users"}
-    if str(num_points) not in random_walk_stats["limited_random_walk_scaled"]:
-        random_walk_stats["limited_random_walk_scaled"][str(num_points)] = {}
-    if str(scale) not in random_walk_stats["limited_random_walk_scaled"][str(num_points)]:
-        random_walk_stats["limited_random_walk_scaled"][str(num_points)][str(scale)] = []
-    random_walk_stats["limited_random_walk_scaled"][str(num_points)][str(scale)].append(max_step) 
+    if str(num_users) not in random_walk_stats["limited_random_walk_scaled"]:
+        random_walk_stats["limited_random_walk_scaled"][str(num_users)] = {}
+    if str(vol) not in random_walk_stats["limited_random_walk_scaled"][str(num_users)]:
+        random_walk_stats["limited_random_walk_scaled"][str(num_users)][str(vol)] = []
+    random_walk_stats["limited_random_walk_scaled"][str(num_users)][str(vol)].append(max_step) 
     return points
 
+def max_demand_sample( max_demand, min_demand, num_points, direction_foo, random_foo, num_users=None, vol=None):
+    if num_users is None:
+        num_users = num_points
+    if vol is None:
+        vol = max_demand
+    points  = random_foo(num_points)
+    net_demand = sum([direction_foo(x) for x in points])
+    misses = 0
+    while net_demand > max_demand or net_demand < min_demand:
+        points  = random_foo(num_points)
+        net_demand = sum([direction_foo(x) for x in points])
+        misses+=1
+        # print("misses", misses,"demand", net_demand,"range", max_demand,min_demand, "num_points", num_points)
+    global random_walk_stats
+    if "max_demand_sample" not in random_walk_stats:
+        random_walk_stats["max_demand_sample"] = {"measuring": "misses", "index": "num_users"}
+    if str(num_users) not in random_walk_stats["max_demand_sample"]:
+        random_walk_stats["max_demand_sample"][str(num_users)] = {}
+    if str(vol) not in random_walk_stats["max_demand_sample"][str(num_users)]:
+        random_walk_stats["max_demand_sample"][str(num_users)][str(vol)] = []
+    random_walk_stats["max_demand_sample"][str(num_users)][str(vol)].append(misses)    
+    return points
+
+def random_interleave(arr1, arr2):
+    combined = []
+    index1 = index2 = 0
+    while len(combined) < len(arr1) + len(arr2):
+        if random.choice([0,1]) == 0:
+            combined.append(arr1[index1])
+            index1+=1
+            if index1 == len(arr1):
+                combined += arr2[index2:]
+                return combined
+        else:
+            combined.append(arr2[index2])
+            index2+=1
+            if index2 == len(arr2):
+                combined += arr1[index1:]
+                return combined
+    return combined
 
 def produce_sandwich(chain, tx_victims, attacker, debug=False):
     """figure out the optimal frontrun/backrun transactions for
@@ -400,9 +449,9 @@ def optimal_arbitrage_algebra(chain1, chain2, prefs, attacker):
     Returns:
         tuple of dict (swap txs): (transaction for chain1 and transaction for chain2)
     """
-    assert(chain1.static is not None or chain2.static is not None)
+    assert(chain1.static is None or chain2.static is None) #can't do arbitrage on two static chains
     if chain2.static:
-        print("chain1", chain1.price('a'), "chain2", chain2.price('a'))
+        # print("chain1", chain1.price('a'), "chain2", chain2.price('a'))
 
         if chain2.price('A') > chain1.price('A'):
             tokenTrade = 'B'
@@ -432,7 +481,7 @@ def optimal_arbitrage_algebra(chain1, chain2, prefs, attacker):
             c2 = chain2
 
 
-    print("chain1", chain1.price(tokenTrade), "chain2", chain2.price(tokenTrade), "trading token" , tokenTrade)
+    # print("chain1", chain1.price(tokenTrade), "chain2", chain2.price(tokenTrade), "trading token" , tokenTrade)
     #how much of tokenTrade we can sell to c1 and buy from c2 until they have the same price
     #how much of A we can sell to c1 and buy from c2 until they have the same price
     a=c1.product()
@@ -450,23 +499,28 @@ def optimal_arbitrage_algebra(chain1, chain2, prefs, attacker):
     gsq = g**2
     
     if c2.static is not None:
-        vars = [a,d,c2.price(tokenTrade)]
+        # vars = [a,d,c2.price(tokenTrade)]
         amtB1 = -d+math.sqrt(a/c2.price(tokenTrade))
         amtB2 = -d-math.sqrt(a/c2.price(tokenTrade))
         amtB = max(amtB1, amtB2)
         amtA = amtB*c2.price(tokenTrade)
-        print("Optimal arbitrage1 amtTT", amtB, "amtOT", amtA, vars)   
+        # print("Optimal arbitrage1 amtTT", amtB, "amtOT", amtA, vars)   
     else:
-        vars = [a,b,c,d,g]
+        # vars = [a,b,c,d,g]
         #https://www.wolframalpha.com/input?i=%28c-x%29%2F%28a%2F%28c-x%29%29+%3D+%28g%2Bx%29%2F%28b%2F%28g%2Bx%29%29
         amtB1 = (-math.sqrt(a*b*csq + 2*a*b*c*g + a*b*gsq)+a*c+a*g+csq*(-d)-2*c*d*g-d*gsq)/(csq+2*c*g+gsq)
         amtB2 = ( math.sqrt(a*b*csq + 2*a*b*c*g + a*b*gsq)+a*c+a*g+csq*(-d)-2*c*d*g-d*gsq)/(csq+2*c*g+gsq)
 
         amtB = max(amtB1, amtB2)
         amtA = pool_swap(d,c,amtB)
+    if amtB < 0:
+        if np.isclose(chain1.price('A'), chain2.price('A')):
+            amtB = 0
+            amtA = 0
+        else:
+            require(amtB >= 0, f"Optimal arbitrage failed {amtB1} {amtB2}: prices [{chain1.price('A')}, {chain2.price('A')}] {np.isclose(amtB,0)} ")
+            assert amtA >= 0
 
-    require(amtB >= 0, f"Optimal arbitrage failed {amtB1} {amtB2}: {vars}")
-    assert amtA >= 0
 
 
     if tokenTrade == 'A':
@@ -563,7 +617,7 @@ def optimal_arbitrage_search(chain1, chain2, prefs, attacker):
     else:
         return last_successful_tx1, last_successful_tx2
 
-def make_trade(chain, sndr, prefs, optimal=False, static_value=1., scaled=False, percent_optimal=1., slippage=None, accounts=None):
+def make_trade(chain, sndr, prefs, optimal=False, static_value=1., scaled=False, percent_optimal=1., slippage_percentage=None, accounts=None, debug=False):
     """generate a swap transaction based on the user's preference
     and the top of block pool price on the chain
 
@@ -590,65 +644,58 @@ def make_trade(chain, sndr, prefs, optimal=False, static_value=1., scaled=False,
     pool_price = chain.poolB/chain.poolA #dollars/apple 
     if accounts is None:
         accounts = chain.accounts
-    # print("my_price",  my_price, pool_price)
+    account = accounts[sndr].tokens
     # print("pool_price", pool_price, "my_price", my_price)
     if pool_price > my_price: #trade A for B
-        # print("trade A for B")
         if optimal == False:
             if scaled:
                 a=pool_price/my_price
                 scale_val = logistic_function(pool_price/my_price, 1, 1.0, 0.0)
-                with open("scaled_val", "a") as f:
-                    f.write(f"{prefs},{pool_price/my_price},{scale_val}\n")
-                print("scaled value", static_value, "*", pool_price/my_price,f"({scale_val})","=", static_value* scale_val)
+                if debug:
+                    print(f"scaled value * {static_value} logistic_function({pool_price/my_price})={scale_val}) = {static_value* scale_val}")
                 static_value = scale_val*static_value
-            qty = min(static_value, optimal_trade_amt(chain.poolB, chain.poolA, prefs[1], prefs[0], accounts[sndr].tokens[1], accounts[sndr].tokens[0]))
+            qty = static_value
         else:
             if scaled:
                 percent_optimal = percent_optimal*my_price
-            optimal_val = optimal_trade_amt(chain.poolB, chain.poolA, prefs[1], prefs[0], accounts[sndr].tokens[1], accounts[sndr].tokens[0])
-            # print("optimal_val", optimal_val, "*", percent_optimal, "=", optimal_val*percent_optimal )
+            optimal_val = optimal_trade_amt(chain.poolB, chain.poolA, prefs[1], prefs[0], account[1], aaccount[0])
+            if debug:
+                print("optimal_val", optimal_val, "*", percent_optimal, "=", optimal_val*percent_optimal )
             optimal_val *= percent_optimal
             qty = optimal_val
-        qty = min(qty, accounts[sndr].tokens[0])
-        slip = -prefs[0]* qty / prefs[1] # slippage s.t. new net utility will equal old net utility
-        if slippage:
-            slip = -max(-slip, pool_swap(chain.poolA, chain.poolB, qty)*slippage)
-            print("slippage", -slip, f"{pool_swap(chain.poolA, chain.poolB, qty)}*{slippage}={pool_swap(chain.poolA, chain.poolB, qty)*slippage}", "vs", prefs[0]* qty / prefs[1])
-
-        if optimal:
-            print(sndr, f"\t{percent_optimal*100}% optimal tx:", "qty", qty, "slip", slip, "for prefs", prefs, "tokens", accounts[sndr].tokens, "pool", [chain.poolA, chain.poolB])
+        # qty = min(qty, account[0])
+        optimal_slip = prefs[0]* qty / prefs[1] # slippage s.t. new net utility will equal old net utility
+        if slippage_percentage is not None:
+            slip = -max(optimal_slip, pool_swap(chain.poolA, chain.poolB, qty)*slippage_percentage)
         else:
-            print(sndr, f"\ttx:", "qty", qty, "slip", slip, "for prefs", prefs, "tokens", accounts[sndr].tokens, "pool", [chain.poolA, chain.poolB])
+            slip = -optimal_slip
 
+        if debug:
+            print(f"{sndr} tx: qty {qty} slip {slip} prefs{prefs} tokens {account} pool {[chain.poolA, chain.poolB]}")
         assert abs(slip) <= abs(pool_swap(chain.poolA, chain.poolB, qty))
     elif my_price > pool_price: #trade B for A
-        # print("trade B for A")
         if optimal == False:
             if scaled:
-                a=my_price/pool_price
                 scale_val = logistic_function(my_price/pool_price, 1, 1.0, 0.0)
-                with open("scaled_val", "a") as f:
-                    f.write(f"{prefs},{my_price/pool_price},{scale_val}\n")
-                print("scaled value", static_value, "*", pool_price/my_price,f"({scale_val})","=", static_value* scale_val)
+                if debug:
+                    print(f"scaled value * {static_value} logistic_function({my_price/pool_price})={scale_val}) = {static_value* scale_val}")
                 static_value = scale_val*static_value
-            qty = min(static_value, optimal_trade_amt(chain.poolA, chain.poolB, prefs[0], prefs[1], accounts[sndr].tokens[0], accounts[sndr].tokens[1]))
+            qty = static_value
         else:
             if scaled:
                 percent_optimal = percent_optimal*my_price
-            optimal_val = optimal_trade_amt(chain.poolA, chain.poolB, prefs[0], prefs[1], accounts[sndr].tokens[0], accounts[sndr].tokens[1])
-            # print("optimal_val", optimal_val, "*", percent_optimal, "=", optimal_val*percent_optimal )
+            optimal_val = optimal_trade_amt(chain.poolA, chain.poolB, prefs[0], prefs[1], account[0], account[1])
+            if debug:
+                print("optimal_val", optimal_val, "*", percent_optimal, "=", optimal_val*percent_optimal)
             optimal_val *= percent_optimal
             qty = optimal_val
-        qty = -min(qty, accounts[sndr].tokens[1])
+        # qty = -min(qty, account[1])
+        qty = -qty
         slip = -prefs[1]* qty / prefs[0] # slippage s.t. new net utility will equal old net utility
-        if slippage:
-            slip = max(-slip, pool_swap(chain.poolB, chain.poolA, abs(qty))*slippage)
-            print("slippage", slip, f"{pool_swap(chain.poolB, chain.poolA, abs(qty))}*{slippage}={pool_swap(chain.poolB, chain.poolA, abs(qty))*slippage}", "vs", -prefs[1]* qty / prefs[0] )
-        if optimal:
-            print(sndr, f"\t{percent_optimal*100}% optimal tx:", "qty", qty, "slip", slip, "for prefs", prefs, "tokens", accounts[sndr].tokens, "pool", [chain.poolA, chain.poolB])
-        else:
-            print(sndr, f"\ttx:", "qty", qty, "slip", slip, "for prefs", prefs, "tokens", accounts[sndr].tokens, "pool", [chain.poolA, chain.poolB])
+        if slippage_percentage is not None:
+            slip = max(-slip, pool_swap(chain.poolB, chain.poolA, abs(qty))*slippage_percentage)
+        if debug:
+            print(f"{sndr} tx: qty {qty} slip {slip} prefs{prefs} tokens {account} pool {[chain.poolA, chain.poolB]}")
 
         assert abs(slip) <= abs(pool_swap(chain.poolB, chain.poolA, abs(qty)))
     else:
@@ -657,7 +704,7 @@ def make_trade(chain, sndr, prefs, optimal=False, static_value=1., scaled=False,
     # print("values",a,prefs[0],abs(qty))
     # with open("data",'a') as f:
     #     f.write(f"{a},{prefs[0]},{abs(qty)}\n")
-    return create_swap(sndr, qty, slip)#, a
+    return create_swap(sndr, qty, slip)
 
 def scenario_test_optimal_trade():
     preferences = {"alice":[1.1, 0.9]}
@@ -1547,8 +1594,8 @@ def scenario_fee_test():
     c1 = Chain(1,1,chainid="c1", fee=.01)
     c2 = Chain(99,99,chainid="c2", fee=.01)
     pref = [1.1,0.9]
-    tx1 = make_trade(c1, 'alice', pref, optimal=True, slippage=.9)
-    tx2 = make_trade(c2, 'alice', pref, optimal=True, slippage=.9)
+    tx1 = make_trade(c1, 'alice', pref, optimal=True, slippage_percentage=.9)
+    tx2 = make_trade(c2, 'alice', pref, optimal=True, slippage_percentage=.9)
     txFront, txBack = produce_sandwich(c2, [tx2], 'bob')
 
     util_before = {}
@@ -1579,7 +1626,7 @@ def scenario_fee_test():
     for k in util_before:
         print(k, "b4", util_before[k], 'af', util_after[k], "diff", util_after[k]-util_before[k])
 
-def scenario_liquidity_provider(random_type='same', num_intervals=10, num_iters=10, debug=False, num_prof_users=2, mevshare_percentage=.9, min_volatility=0.01, max_volatility=5):
+def scenario_liquidity_provider(random_type='same', num_intervals=10, num_iters=10, debug=False, num_prof_users=2, kickback_percentage=.9, min_volatility=0.01, max_volatility=5):
 
     np.random.seed(0)
     num_block_users = 0
@@ -1629,7 +1676,7 @@ def scenario_liquidity_provider(random_type='same', num_intervals=10, num_iters=
           
         return accounts, prefere
 
-def scenario_arbitrage(random_type='same', num_intervals=10, num_iters=10, debug=False, num_prof_users=2, mevshare_percentage=.9, min_volatility=0.01, max_volatility=2):
+def scenario_arbitrage(random_type='same', num_intervals=10, num_iters=10, debug=False, num_prof_users=2, kickback_percentage=.9, min_volatility=0.01, max_volatility=2):
     """Run arbitrage simulation
 
     Args:
@@ -1638,7 +1685,7 @@ def scenario_arbitrage(random_type='same', num_intervals=10, num_iters=10, debug
         num_iters (int, optional): number of iterations of each volatility. Defaults to 10.
         debug (bool, optional): print extra debug information. Defaults to False.
         num_prof_users (int, optional): number of users of PROF/MEVShare. Defaults to 2.
-        mevshare_percentage (float, optional): percentage of profit returned to MEVShare users. Defaults to .9.
+        kickback_percentage (float, optional): percentage of profit returned to MEVShare users. Defaults to .9.
         min_volatility (float, optional): minimum volatility. Defaults to 0.01.
         max_volatility (float, optional): maximum volatility. Defaults to 5.
 
@@ -1740,7 +1787,7 @@ def scenario_arbitrage(random_type='same', num_intervals=10, num_iters=10, debug
                         pref = preferences[username][interval_num][iter_num]
                         util_old[username][interval_num][iter_num] = utility(pref, accounts[username].tokens)
                         #users only use chain1 
-                        txs[username] = make_trade(chain1, username, pref, optimal=True, percent_optimal=.2, accounts=accounts, slippage=.9)
+                        txs[username] = make_trade(chain1, username, pref, optimal=True, percent_optimal=.2, accounts=accounts, slippage_percentage=.9)
 
 
                     #execute transactions
@@ -1808,9 +1855,9 @@ def scenario_arbitrage(random_type='same', num_intervals=10, num_iters=10, debug
                         elif scenario == 'mevs':
                             attacker_username=f"arbi_{scenario}_{coorelation_type}_{i}"
                             profit = [accounts[attacker_username].tokens[0] - tokens[attacker_username][0], accounts[attacker_username].tokens[1] - tokens[attacker_username][1]]
-                            print(f"arbitrage profit {attacker_username} -> {username}: {profit} * {mevshare_percentage} = {[profit[0]*mevshare_percentage, profit[1]*mevshare_percentage]}")
-                            accounts[username].tokens[0] += profit[0]*mevshare_percentage
-                            accounts[username].tokens[1] += profit[1]*mevshare_percentage
+                            print(f"arbitrage profit {attacker_username} -> {username}: {profit} * {kickback_percentage} = {[profit[0]*kickback_percentage, profit[1]*kickback_percentage]}")
+                            accounts[username].tokens[0] += profit[0]*kickback_percentage
+                            accounts[username].tokens[1] += profit[1]*kickback_percentage
 
                     #calculate utility with kickbacks
                     for i in range(num_prof_users): 
@@ -1852,7 +1899,7 @@ def scenario_arbitrage(random_type='same', num_intervals=10, num_iters=10, debug
             plt.plot(volatilities, util_diff_avg_users_kickback[f'{scenario}_{coorelation_type}'], label = f'{scenario}')
         plt.xlabel('volatility (std of preferences)')
         plt.ylabel('difference in net utility')
-        plt.title(f'average difference in net utility \nuser preferences \'{coorelation_type}\'\nmevshare percent {mevshare_percentage}')
+        plt.title(f'average difference in net utility \nuser preferences \'{coorelation_type}\'\nmevshare percent {kickback_percentage}')
         # plt.xscale("log")
         plt.legend([f'{s}' for s in ['prof', 'mevshare', 'prof_nokickback']])
         figure_num+=1
@@ -1870,11 +1917,11 @@ def scenario_arbitrage(random_type='same', num_intervals=10, num_iters=10, debug
                     plt.plot(volatilities, util_diff_individual_users_kickback[f'{scenario}_{coorelation_type}'][i], label = f'{scenario}')
                 plt.xlabel('volatility (std of preferences)')
                 plt.ylabel(f'difference in net utility')
-                plt.title(f'difference in net utility, user preferences \'{coorelation_type}\'\nuser {i}, mevshare percent {mevshare_percentage}')
+                plt.title(f'difference in net utility, user preferences \'{coorelation_type}\'\nuser {i}, mevshare percent {kickback_percentage}')
                 plt.legend([f'{s}' for s in ['prof', 'mevshare', 'prof_nokickback']])
                 figure_num+=1
 
-def scenario_arbitrage_users(random_type='same', num_iters=10, mevshare_percentage=.9, debug=False, min_users=2, max_users=20, users_range=None, min_volatility=0.01, max_volatility=2, num_volatilities=10, volatilities=None):
+def scenario_arbitrage_users(random_type='same', num_iters=10, kickback_percentage=.9, debug=False, min_users=2, max_users=20, users_range=None, min_volatility=0.01, max_volatility=2, num_volatilities=10, volatilities=None):
     """Run arbitrage simulation
 
     Args:
@@ -1883,7 +1930,7 @@ def scenario_arbitrage_users(random_type='same', num_iters=10, mevshare_percenta
         num_iters (int, optional): number of iterations of each volatility. Defaults to 10.
         debug (bool, optional): print extra debug information. Defaults to False.
         num_users (int, optional): number of users of PROF/MEVShare. Defaults to 2.
-        mevshare_percentage (float, optional): percentage of profit returned to MEVShare users. Defaults to .9.
+        kickback_percentage (float, optional): percentage of profit returned to MEVShare users. Defaults to .9.
         min_volatility (float, optional): minimum volatility. Defaults to 0.01.
         max_volatility (float, optional): maximum volatility. Defaults to 5.
 
@@ -1902,16 +1949,30 @@ def scenario_arbitrage_users(random_type='same', num_iters=10, mevshare_percenta
     if users_range is None:
         users_range = list(range(min_users, max_users))
     
-    scenarios_list = ['prof', 'mevs', 'prof_nokickback']
+    scenarios_list = ['prof', 'prof_nokickback', 'mevs']
 
     print("volatilities", volatilities)
     print("users range", users_range)
+    raw_data_file = {}
+    for interval_num in range(num_volatilities):
+        raw_data_file[volatilities[interval_num]] = {}
+        for scenario in scenarios_list:
+            raw_data_file[volatilities[interval_num]][scenario] = f"tmp_data/{random_type}_{volatilities[interval_num]}vol_{scenario}_{users_range[0]}to{users_range[-1]}users_{num_iters}iters_raw.csv_tmp"
+    print("raw_data_file", raw_data_file)
+    # for v in raw_data_file:
+    #     for t in raw_data_file[v]:
+    #         filename = raw_data_file[v][t]
+    #         with open(filename) as f:
+    #             data = f.read()
+    #         filtered = []
+    #         for l in data.strip().split("\n"):
+    #             if "60," != l[:3]:
+    #                 filtered.append(l)
+    #         with open( filename + "_tmp", "w" ) as f:
+    #             f.write("\n".join(filtered))           
 
-    util_old = {}
-    util_new = {}
-    util_new_kickback = {}
-    
-    def setup_preferences(scenarios,num_users,coorelation_types=['same', 'diff'], random_type='rndm',debug=False):
+    # exit(0)
+    def setup_preferences(scenarios,num_users,coorelation_types=['same', 'diff'], random_type='rndm'):
         """setup users accounts and preferences
 
         Args:
@@ -1951,12 +2012,61 @@ def scenario_arbitrage_users(random_type='same', num_iters=10, mevshare_percenta
                 # print("random_foo",scale,step, prob,prob[0]/prob[1])
                 val = random.choices([0.0,2.0], prob)[0]
                 return val
+            # for v in volatilities:
+            #     print("rws data for vol:", v)
+            #     for s in range(num_users):
+            #         print(s,[logistic_function(s, v, 2,2), logistic_function(s, -v, 2,2)])
 
             prefs = [[ limited_random_walk_scaled(num_users, lambda x: x>1.0, random_foo , scale) for scale in volatilities] for n in range(num_iters)]
             prefs = [[[ prefs[n][s][f] for n in range(num_iters)] for s in range(len(volatilities))] for f in range(num_users) ]
             assert len(prefs) == num_users
             assert len(prefs[0]) == len(volatilities)
             assert len(prefs[0][0]) == num_iters
+        elif random_type == 'max_demand':
+            def direction_foo(x):
+                if x > 1.0:
+                    return 1
+                else: 
+                    return -1
+            prefs = [[ max_demand_sample(max(scale*math.sqrt(num_users), 1.0), min(-scale*math.sqrt(num_users), -1.0), num_users, direction_foo, lambda n: [random.choice([0.0,2.0]) for _ in range(n)] ) for scale in volatilities] for n in range(num_iters)]
+            prefs = [[[ prefs[n][s][f] for n in range(num_iters)] for s in range(len(volatilities))] for f in range(num_users) ]
+            assert len(prefs) == num_users
+            assert len(prefs[0]) == len(volatilities)
+            assert len(prefs[0][0]) == num_iters
+        elif random_type == 'max_demand_range_4':
+            def direction_foo(x):
+                if x > 1.0:
+                    return 1
+                else: 
+                    return -1
+            def make_random_foo(max_scale):
+                return lambda num_users: limited_random_walk_range(max(max_scale*num_users, 1.0), min(-max_scale*num_users, -1.0), num_users, lambda x: x>1.0, lambda : random.choice([0.0,2.0]) )
+            max_demand_scale = 4
+            prefs = [[ max_demand_sample(max(max_demand_scale*math.sqrt(num_users), 1.0), min(-max_demand_scale*math.sqrt(num_users), -1.0), num_users, direction_foo, make_random_foo(scale) ) for scale in volatilities] for n in range(num_iters)]
+            prefs = [[[ prefs[n][s][f] for n in range(num_iters)] for s in range(len(volatilities))] for f in range(num_users) ]
+            assert len(prefs) == num_users
+            assert len(prefs[0]) == len(volatilities)
+            assert len(prefs[0][0]) == num_iters
+        elif random_type == 'max_demand_batches':
+            def direction_foo(x):
+                if x > 1.0:
+                    return 1
+                else: 
+                    return -1
+            def construct_batches(scale, num_users, batch_size):
+                num_batches = int(num_users/batch_size) + 1
+                pref = []
+                total = 0
+                for _ in range(num_batches):
+                    pref += max_demand_sample(max(scale*math.sqrt(batch_size), 1.0), min(-scale*math.sqrt(batch_size), -1.0), batch_size, direction_foo, lambda n: [random.choice([0.0,2.0]) for _ in range(n)] )
+                return pref[:num_users]
+
+            batch_size = 5
+            prefs = [[ construct_batches(scale, num_users, batch_size)  for scale in volatilities] for n in range(num_iters)]
+            prefs = [[[ prefs[n][s][f] for n in range(num_iters)] for s in range(len(volatilities))] for f in range(num_users) ]
+            assert len(prefs) == num_users
+            assert len(prefs[0]) == len(volatilities)
+            assert len(prefs[0][0]) == num_iters            
         else:
             raise Exception(f"random_type {random_type} not found")
 
@@ -1981,28 +2091,32 @@ def scenario_arbitrage_users(random_type='same', num_iters=10, mevshare_percenta
                         preferences[username] = [list(map(lambda x: [x, 2.0-x], preferences[username][j])) for j in range(len(preferences[username]))]
                     else: #all users have the same preference direction
                         preferences[username] = [list(map(lambda x: [2.0-x, x], preferences[username][j])) for j in range(len(preferences[username]))]
+        return preferences
 
+    def setup_accounts(scenario,num_users,name):
+        accounts = {}
+        for i in range(num_users): #each user has their own arbitrager
+            username=f"user_{scenario}_{num_users}-{name}_{i}"
+            accounts[username] = Account(username, [100, 100])
+            if scenario == "mevs":
+                username=f"arbi_{scenario}_{num_users}-{name}_{i}"
+                accounts[username] =Account(username, [100000000000, 100000000000])
+            elif scenario == 'prof':
+                username=f"arbi_{scenario}_{num_users}-{name}" #one arbitrager for all
+                accounts[username] = Account(username, [100000000000, 100000000000])           
+        return accounts
+
+    util_old = {}
+    util_new = {}
+    util_new_kickback = {}
+    for scenario in scenarios_list:
+        for chainids in ['chain1', 'chain2']:
+            for num_users in users_range:
+                for i in range(num_users):
+                    f"user_{scenario}_{num_users}-{chainids}_{i}"
                     util_old[username] = [[None for _ in range(num_iters)]for _ in range(num_volatilities)]
                     util_new[username] = [[None for _ in range(num_iters)]for _ in range(num_volatilities)]
                     util_new_kickback[username]  = [[None for _ in range(num_iters)]for _ in range(num_volatilities)]
-        return preferences
-
-    def setup_accounts(scenario,num_users):
-        accounts = {}
-        for i in range(num_users): #each user has their own arbitrager
-            username=f"user_{scenario}_{num_users}_{i}"
-            accounts[username] = Account(username, [10000, 10000])
-            if scenario == "mevs":
-                username=f"arbi_{scenario}_{num_users}_{i}"
-                accounts[username] =Account(username, [100000000, 100000000])
-                util_old[username] = [[None for _ in range(num_iters)]for _ in range(num_volatilities)]
-                util_new[username] = [[None for _ in range(num_iters)]for _ in range(num_volatilities)]
-            else:
-                username=f"arbi_{scenario}_{num_users}" #one arbitrager for all
-                accounts[username] = Account(username, [100000000, 100000000])
-                util_old[username] = [[None for _ in range(num_iters)]for _ in range(num_volatilities)]
-                util_new[username] = [[None for _ in range(num_iters)]for _ in range(num_volatilities)]            
-        return accounts
 
     util_diff_avg_users = [defaultdict(lambda : [0 for _ in range(num_volatilities)]) for _ in users_range]
     util_diff_avg_users_kickback = [defaultdict(lambda : [[] for _ in range(num_volatilities)]) for _ in users_range]
@@ -2019,16 +2133,17 @@ def scenario_arbitrage_users(random_type='same', num_iters=10, mevshare_percenta
     for user_num in range(len(users_range)):
         num_users = users_range[user_num]
         preferences = setup_preferences(scenarios_list, num_users, ['same'], random_type)
-        for iter_num in range(num_iters):
-            for interval_num in range(0, num_volatilities):
+        for interval_num in range(0, num_volatilities):
+            for iter_num in range(num_iters):
                 util_diff_individual_users.append(defaultdict(lambda : [0 for _ in range(num_users)]))
                 for scenario in scenarios_list:
                     print(f"-----------scenario: {scenario} | user preferences: {num_users} | volatitiy: {volatilities[interval_num]} ({iter_num})-----------")
                     txs = {}
                     kickbacks = {}
-                    accounts = setup_accounts(scenario, num_users)
-                    chain1 = Chain(poolA=100000000., poolB=100000000., accounts=accounts, chainid=f"chain1")
-                    chain2 = Chain(poolA=1000000000000., poolB=1000000000000., accounts=accounts, chainid=f"chain2", static=1.0)
+                    accounts1 = setup_accounts(scenario, num_users, 'chain1')
+                    accounts2 = setup_accounts(scenario, num_users, 'chain2')
+                    chain1 = Chain(poolA=10e7, poolB=10e7, accounts=accounts1, chainid=f"chain1")
+                    chain1 = Chain(poolA=10e7, poolB=10e7, accounts=accounts1, chainid=f"chain1")
                     tokens = {}
 
                     #figure out what transactions each user will make
@@ -2037,7 +2152,8 @@ def scenario_arbitrage_users(random_type='same', num_iters=10, mevshare_percenta
                         pref = preferences[username][interval_num][iter_num]
                         util_old[username][interval_num][iter_num] = utility(pref, accounts[username].tokens)
                         #users only use chain1 
-                        txs[username] = make_trade(chain1, username, pref, optimal=False, static_value=10000, scaled=False, accounts=accounts)
+                        #TODO try to decrease ratio of user trades to liquidity
+                        txs[username] = make_trade(chain1, username, pref, optimal=False, static_value=100, scaled=False, accounts=accounts, slippage_percentage=.8)
                         # txs[username] = make_trade(chain1, username, pref, optimal=False, static_value=100, scaled=True, accounts=accounts)
                         # txs[username] = make_trade(chain1, username, pref, optimal=True, scaled=False, accounts=accounts)
                         if scenario == 'prof':
@@ -2052,18 +2168,18 @@ def scenario_arbitrage_users(random_type='same', num_iters=10, mevshare_percenta
                             attacker_username=f"arbi_{scenario}_{num_users}_{i}"
                             tokens[attacker_username] = copy.copy(accounts[attacker_username].tokens)
                         try:
-                            chain1.apply(txs[username])
+                            chain1.apply(txs[username], debug=debug)
                             
                             if scenario == 'mevs':
                                 if abs(chain1.price('A')- chain2.price('A')) < abs(chain1.price('B')- chain2.price('B')):
                                     tx1, tx2 = optimal_arbitrage_algebra(chain1, chain2, [0.0, 2.0], attacker_username)
                                 else:
                                     tx1, tx2 = optimal_arbitrage_algebra(chain1, chain2, [2.0, 0.0], attacker_username)
-                                chain1.apply(tx1)
-                                chain2.apply(tx2)
-                                print("Chain1: price", chain1.price('a'), chain1.poolA, chain1.poolB)
+                                chain1.apply(tx1, debug=debug)
+                                chain2.apply(tx2, debug=debug)
+                                # print("Chain1: price", chain1.price('a'), chain1.poolA, chain1.poolB)
                         except ExecutionException as e:
-                            with open("user_errors", 'a') as f:
+                            with open("final_data/user_errors", 'a') as f:
                                 f.write(f"{username} {e}\n") 
                             print(username, e)
                             pass
@@ -2075,8 +2191,8 @@ def scenario_arbitrage_users(random_type='same', num_iters=10, mevshare_percenta
                             tx1, tx2 = optimal_arbitrage_algebra(chain1, chain2, [0.0, 2.0], attacker_username)
                         else:
                             tx1, tx2 = optimal_arbitrage_algebra(chain1, chain2, [2.0, 0.0], attacker_username)
-                        chain1.apply(tx1)
-                        chain2.apply(tx2)
+                        chain1.apply(tx1, debug=debug)
+                        chain2.apply(tx2, debug=debug)
 
 
                     #calculate utility for arbitrager
@@ -2087,18 +2203,19 @@ def scenario_arbitrage_users(random_type='same', num_iters=10, mevshare_percenta
                             username=f"arbi_{scenario}_{num_users}_{i}"
                             util_new[username][interval_num][iter_num] = utility([1.0,1.0], accounts[username].tokens)
                             util_diff_avg_attackers[user_num][f'{scenario}_{num_users}'][interval_num] += (util_new[username][interval_num][iter_num] - 20000.)
-                            print("utility", username, "->", util_new[username][interval_num][iter_num])
+                            # print("utility", username, "->", util_new[username][interval_num][iter_num])
                     else:
                         username=f"arbi_{scenario}_{num_users}"
                         util_new[username][interval_num][iter_num] = utility([1.0,1.0], accounts[username].tokens)
                         util_diff_avg_attackers[user_num][f'{scenario}_{num_users}'][interval_num] += (util_new[username][interval_num][iter_num] - 20000.)
-                        print("utility", username, "->", util_new[username][interval_num][iter_num])
+                        # print("utility", username, "->", util_new[username][interval_num][iter_num])
                     #calculate utility for user
                     for i in range(num_users): 
                         username = f"user_{scenario}_{num_users}_{i}"
-                        util_new[username][interval_num][iter_num] = utility(preferences[username][interval_num][iter_num], accounts[username].tokens)
-                        print("utility b4 kickback", username, util_old[username][interval_num][iter_num], "->", util_new[username][interval_num][iter_num])
-                        util_diff_avg_users[user_num][f'{scenario}_{num_users}'][interval_num] += (util_new[username][interval_num][iter_num] - util_old[username][interval_num][iter_num])
+                        util_new[username][interval_num][iter_num] = utility([1.0,1.0], accounts[username].tokens)
+                        if debug:
+                            print("utility b4 kickback", username, util_old[username][interval_num][iter_num], "->", util_new[username][interval_num][iter_num])
+                        util_diff_avg_users[user_num][f'{scenario}_{num_users}'][interval_num] += util_new[username][interval_num][iter_num] #- util_old[username][interval_num][iter_num])
 
 
                     #execute kickbacks
@@ -2107,43 +2224,59 @@ def scenario_arbitrage_users(random_type='same', num_iters=10, mevshare_percenta
                         if 'prof' == scenario: #not no kickback prof
                             attacker_username=f"arbi_{scenario}_{num_users}"
                             profit = [accounts[attacker_username].tokens[0] - tokens[attacker_username][0], accounts[attacker_username].tokens[1] - tokens[attacker_username][1]]
-                            print(f"arbitrage profit {attacker_username} -> {username}: {[profit[0]/num_users, profit[1]/num_users]}")
-                            accounts[username].tokens[0] += profit[0]/num_users 
-                            accounts[username].tokens[1] += profit[1]/num_users
+                            if debug:
+                                print(f"arbitrage profit {attacker_username} -> {username}: {[profit[0]/num_users, profit[1]/num_users]}")
+                            accounts[username].tokens[0] += profit[0]*kickback_percentage/num_users 
+                            accounts[username].tokens[1] += profit[1]*kickback_percentage/num_users
                             arbitrage_amounts[scenario][user_num][interval_num].append(sum(profit)/num_users) 
                         elif scenario == 'mevs':
                             attacker_username=f"arbi_{scenario}_{num_users}_{i}"
                             profit = [accounts[attacker_username].tokens[0] - tokens[attacker_username][0], accounts[attacker_username].tokens[1] - tokens[attacker_username][1]]
-                            print(f"arbitrage profit {attacker_username} -> {username}: {profit} * {mevshare_percentage} = {[profit[0]*mevshare_percentage, profit[1]*mevshare_percentage]}")
-                            accounts[username].tokens[0] += profit[0]*mevshare_percentage
-                            accounts[username].tokens[1] += profit[1]*mevshare_percentage
+                            if debug:
+                                print(f"arbitrage profit {attacker_username} -> {username}: {profit} * {kickback_percentage} = {[profit[0]*kickback_percentage, profit[1]*kickback_percentage]}")
+                            accounts[username].tokens[0] += profit[0]*kickback_percentage
+                            accounts[username].tokens[1] += profit[1]*kickback_percentage
                             arbitrage_amounts[scenario][user_num][interval_num].append(sum(profit)) 
 
                     #calculate utility with kickbacks
+                    # print("updating", user_num,f'{scenario}_{num_users}',interval_num)
                     for i in range(num_users): 
                         username = f"user_{scenario}_{num_users}_{i}"
-                        util_new_kickback[username][interval_num][iter_num] = utility(preferences[username][interval_num][iter_num], accounts[username].tokens)
-                        print("utility w/ kickback", username, util_old[username][interval_num][iter_num], "->", util_new_kickback[username][interval_num][iter_num])
-                        util_diff_avg_users_kickback[user_num][f'{scenario}_{num_users}'][interval_num].append((util_new_kickback[username][interval_num][iter_num] - util_old[username][interval_num][iter_num]))
+                        # pref = [1.0,1.0]
+                        pref = preferences[username][interval_num][iter_num]                            
+                        util_new_kickback[username][interval_num][iter_num] = utility([1.0,1.0], accounts[username].tokens)
+                        print("utility w/ kickback", username, accounts[username].tokens,"tokens", util_old[username][interval_num][iter_num], "->", util_new_kickback[username][interval_num][iter_num])
+                        util_diff_avg_users_kickback[user_num][f'{scenario}_{num_users}'][interval_num].append(util_new_kickback[username][interval_num][iter_num] )#- util_old[username][interval_num][iter_num]))
                         util_diff_avg_users_kickback_diff[user_num][f'{scenario}_{num_users}'][interval_num] += (util_new_kickback[username][interval_num][iter_num] - util_new[username][interval_num][iter_num])
-                        util_diff_individual_users_kickback[user_num][f'{scenario}_{num_users}'][i][interval_num] += (util_new_kickback[username][interval_num][iter_num] - util_old[username][interval_num][iter_num])
-                        util_diff_individual_users[user_num][scenario][i] = util_new_kickback[username][interval_num][iter_num] - util_old[username][interval_num][iter_num]
+                        util_diff_individual_users_kickback[user_num][f'{scenario}_{num_users}'][i][interval_num] += util_new_kickback[username][interval_num][iter_num] #- util_old[username][interval_num][iter_num])
+                        util_diff_individual_users[user_num][scenario][i] = util_new_kickback[username][interval_num][iter_num] #- util_old[username][interval_num][iter_num]
+                    # print("end", user_num,f'{scenario}_{num_users}',interval_num,len(util_diff_avg_users_kickback[user_num][f'{scenario}_{num_users}'][interval_num]),util_diff_avg_users_kickback[user_num][f'{scenario}_{num_users}'][interval_num])
                 for i in range(num_users):
                     if util_diff_individual_users[user_num]['prof_nokickback'][i] > util_diff_individual_users[user_num]['mevs'][i]:
-                        with open("logs/example_users", "a") as f:
-                            f.write(f"-----------scenario: {scenario} | user preferences: {num_users} | volatitiy: {volatilities[interval_num]} ({iter_num})-----------")
-                            f.write(f"\nuser_prof_nokickback_{num_users}_{i} {util_diff_individual_users[user_num]['prof_nokickback'][i]}")
-                            f.write(f"\nuser_mevs_{num_users}_{i} {util_diff_individual_users[user_num]['mevs'][i]}")
-                            f.write(f"\nuser_prof_{num_users}_{i} {util_diff_individual_users[user_num]['prof'][i]}")
-                            f.write("\n\n")
-                            number_prof_nokickback_users[user_num][interval_num] +=1
+                        # with open("logs/example_users", "a") as f:
+                        #     f.write(f"-----------scenario: {scenario} | user preferences: {num_users} | volatitiy: {volatilities[interval_num]} ({iter_num})-----------")
+                        #     f.write(f"\nuser_prof_nokickback_{num_users}_{i} {util_diff_individual_users[user_num]['prof_nokickback'][i]}")
+                        #     f.write(f"\nuser_mevs_{num_users}_{i} {util_diff_individual_users[user_num]['mevs'][i]}")
+                        #     f.write(f"\nuser_prof_{num_users}_{i} {util_diff_individual_users[user_num]['prof'][i]}")
+                        #     f.write("\n\n")
+                        number_prof_nokickback_users[user_num][interval_num] +=1
+
                     
-        for interval_num in range(0, num_volatilities):
             for scenario in scenarios_list:
                 util_diff_avg_attackers[user_num][f'{scenario}_{num_users}'][interval_num] /= (num_users*num_iters)
                 util_diff_avg_users[user_num][f'{scenario}_{num_users}'][interval_num] /= (num_users*num_iters)
                 util_diff_avg_users_kickback_diff[user_num][f'{scenario}_{num_users}'][interval_num] /= (num_users*num_iters)
-        
+                util_data = util_diff_avg_users_kickback[user_num][f'{scenario}_{num_users}'][interval_num]
+                # print("util_data", util_data)
+                avg_util = np.average(util_data)
+                std_util = np.std(util_data)
+                raw_data = [f"{num_users},{util_data[i]}" for i in range(len(util_data))]
+                with open(f"test_data/{random_type}_{volatilities[interval_num]}vol_{scenario}_{users_range[0]}_to_{users_range[-1]}users_{num_iters}iters.csv", "a") as f:
+                    f.write(f"{num_users},{avg_util},{std_util}\n")
+                with open(raw_data_file[volatilities[interval_num]][scenario], "a") as f:
+                    f.write("\n".join(raw_data))
+                    f.write("\n")
+
     print("\n\n\n----------------------------------------results----------------------------------------")
     print("volatilities", volatilities)
     print("users range", users_range)
@@ -2237,12 +2370,12 @@ def scenario_arbitrage_users(random_type='same', num_iters=10, mevshare_percenta
 
             # print("util_diff_avg_users diff w/ & w/o kickback", f'{scenario}_{coorelation_type}', util_diff_avg_users_kickback_diff[f'{scenario}_{coorelation_type}'])
             # print("util_diff_avg_arbitrager", f'{scenario}_{coorelation_type}', util_diff_avg_attackers[f'{scenario}_{coorelation_type}'])
-    for k in range(len(volatilities)):
-        print("util_diff between prof_nokickback-mevs",volatilities[k],[avg_util_volatility['prof_nokickback'][k][i] - avg_util_volatility['mevs'][k][i] for i in range(len(users_range))])
-    for k in range(len(volatilities)):
-        for i in range(len(users_range)):
-            if avg_util_volatility['prof_nokickback'][k][i] > avg_util_volatility['mevs'][k][i]:
-                pass
+    # for k in range(len(volatilities)):
+        # print("util_diff between prof_nokickback-mevs",volatilities[k],[avg_util_volatility['prof_nokickback'][k][i] - avg_util_volatility['mevs'][k][i] for i in range(len(users_range))])
+    # for k in range(len(volatilities)):
+    #     for i in range(len(users_range)):
+    #         if avg_util_volatility['prof_nokickback'][k][i] > avg_util_volatility['mevs'][k][i]:
+    #             pass
                 # print("volatitity!!!", volatilities[k], "users",users_range[i],'prof_nokickback', avg_util['prof_nokickback'][k][i], 'mevs', avg_util['mevs'][k][i])
                 # print( "num_users",users_range[i],'prof_nokickback', avg_util_volatility['prof_nokickback'][k][i], '> mevs', avg_util_volatility['mevs'][k][i], "by", avg_util_volatility['prof_nokickback'][k][i] - avg_util_volatility['mevs'][k][i])
     for k in range(len(users_range)):
@@ -2254,22 +2387,22 @@ def scenario_arbitrage_users(random_type='same', num_iters=10, mevshare_percenta
 
 
     global figure_num
-    for k in range(len(users_range)):
-        # for scenario in ['prof', 'mevs']:
-            # k=0
-        scenario = 'prof'
-        fig = plt.figure(figure_num)
-        ax = fig.add_subplot()
-        # fig, ax = plt.subplots()
-        # for scenario in ['prof', 'mevs']:
-            # ax.plot(users_range, avg_util_volatility[scenario][k], label = f'{scenario}')
-        ax.errorbar(volatilities, np.average(arbitrage_amounts[scenario][k], axis=1), yerr=np.std(arbitrage_amounts[scenario][k], axis=1),  label = f'{scenario}')
-    ax.set_xlabel('volatility')
-    ax.set_ylabel('arbitrage amounts')
-    plt.title(f'MEV-extracted volatilty model: {random_type}\nnum iterations: {num_iters} num_users: {users_range}\n')
-    plt.xscale("log")
-    plt.legend(['prof', 'mevshare'])
-    figure_num+=1
+    # for k in range(len(users_range)):
+    #     # for scenario in ['prof', 'mevs']:
+    #         # k=0
+    #     scenario = 'prof'
+    #     fig = plt.figure(figure_num)
+    #     ax = fig.add_subplot()
+    #     # fig, ax = plt.subplots()
+    #     # for scenario in ['prof', 'mevs']:
+    #         # ax.plot(users_range, avg_util_volatility[scenario][k], label = f'{scenario}')
+    #     ax.errorbar(volatilities, np.average(arbitrage_amounts[scenario][k], axis=1), yerr=np.std(arbitrage_amounts[scenario][k], axis=1),  label = f'{scenario}')
+    # ax.set_xlabel('volatility')
+    # ax.set_ylabel('arbitrage amounts')
+    # plt.title(f'MEV-extracted volatilty model: {random_type}\nnum iterations: {num_iters} num_users: {users_range}\n')
+    # plt.xscale("log")
+    # plt.legend(['prof', 'mevshare'])
+    # figure_num+=1
 
     if len(random_walk_stats.keys()) > 0:
         for func in random_walk_stats:
@@ -2288,32 +2421,33 @@ def scenario_arbitrage_users(random_type='same', num_iters=10, mevshare_percenta
                 plt.legend([f'{a} {random_walk_stats[func]["index"]}' for a in random_walk_stats[func] if a != "measuring" and a != "index"])
             figure_num+=1
     # return
-    for k in range(len(volatilities)):
-        for scenario in scenarios_list:
-            with open(f"data/{random_type}_{volatilities[k]}_{scenario}_{users_range[0]}_{users_range[-1]}", "w") as f:
-                data = [f"{users_range[i]},{avg_util_volatility[scenario][k][i]},{std_util_volatility[scenario][k][i]}" for i in range(len(users_range))]
-                f.write("\n".join(data))
+    # for k in range(len(volatilities)):
+    #     for scenario in scenarios_list:
+    #         with open(f"data/{random_type}_{volatilities[k]}_{scenario}_{users_range[0]}_{users_range[-1]}_{num_iters}", "a") as f:
+    #             data = [f"{users_range[i]},{avg_util_volatility[scenario][k][i]},{std_util_volatility[scenario][k][i]}" for i in range(len(users_range))]
+    #             f.write("\n".join(data))
+    return raw_data_file
 
     for k in range(len(volatilities)):
         fig = plt.figure(figure_num)
         ax = fig.add_subplot()
         # fig, ax = plt.subplots()
         for scenario in scenarios_list:
-            ax.plot(users_range, avg_util_volatility[scenario][k], label = f'{scenario}') #TODO change error bars to confidence interval
+            # ax.plot(users_range, avg_util_volatility[scenario][k], label = f'{scenario}') #TODO change error bars to confidence interval
             # errors = confidence_interval(avg_util_volatility[scenario][k], std_util_volatility[scenario][k], num_iters)
-            errors = confidence_interval(avg_util_volatility[scenario][k], std_util_volatility[scenario][k], num_iters, alpha=.05, z=1.624)
+            errors = confidence_interval(avg_util_volatility[scenario][k], std_util_volatility[scenario][k], num_iters*users_range, alpha=.05, z=1.624)
             ax.errorbar(users_range, avg_util_volatility[scenario][k], yerr=errors,  label = f'{scenario}')
         
         ax.set_xlabel('number of prof users')
         ax.set_ylabel('difference in net utility')
         # print("ylim", plt.ylim())
         # plt.ylim(min(avg_util[scenario][k])-10, max(avg_util[scenario][k])+10)
-        # plt.title(f'average difference in net utility \nstd preferences: {volatilities[k]}\nmevshare percent {mevshare_percentage}')
-        plt.title(f'num iterations: {num_iters} volatility: {volatilities[k]}\nmevshare percent {mevshare_percentage} preference {random_type}')
+        # plt.title(f'average difference in net utility \nstd preferences: {volatilities[k]}\nmevshare percent {kickback_percentage}')
+        plt.title(f'num iterations: {num_iters} volatility: {volatilities[k]}\nmevshare percent {kickback_percentage} preference {random_type}')
         # plt.xscale("log")
         plt.legend(['prof', 'mevshare', 'prof_nokickback'])
         figure_num+=1
-    return
+    return raw_data_file
     for k in range(len(users_range)):
         fig = plt.figure(figure_num)
         ax = fig.add_subplot()
@@ -2325,14 +2459,880 @@ def scenario_arbitrage_users(random_type='same', num_iters=10, mevshare_percenta
         ax.set_ylabel('difference in net utility')
         # print("ylim", plt.ylim())
         # plt.ylim(min(avg_util[scenario][k])-10, max(avg_util[scenario][k])+10)
-        # plt.title(f'average difference in net utility \nstd preferences: {volatilities[k]}\nmevshare percent {mevshare_percentage}')
-        plt.title(f'num iterations: {num_iters} num_users: {users_range[k]}\nmevshare percent {mevshare_percentage} preference {random_type}')
+        # plt.title(f'average difference in net utility \nstd preferences: {volatilities[k]}\nmevshare percent {kickback_percentage}')
+        plt.title(f'num iterations: {num_iters} num_users: {users_range[k]}\nmevshare percent {kickback_percentage} preference {random_type}')
         # plt.xscale("log")
         plt.legend(['prof', 'mevshare', 'prof_nokickback'])
         figure_num+=1
 
+def scenario_arbitrage_CEXDEX(random_type='rndm',file_location='tmp_data/',num_iters=10, kickback_percentage=.9, debug=False, min_users=2, max_users=20, users_range=None, 
+        min_volatility=0.01, max_volatility=2, num_volatilities=10, volatilities=None, extra_params={"max_demand_scale":4, 'max_demand_batch_size': 5}):
+    """Run arbitrage simulation
 
-def scenario_arbitrage_by_mean(random_type='same', num_intervals=10, num_iters=10, debug=False, num_prof_users=2, mevshare_percentage=.9, min_volatility=0.01, max_volatility=2):
+    Args:
+        num_volatilities (int, optional): number of volatilities to try. Defaults to 10.
+        num_iters (int, optional): number of iterations of each volatility. Defaults to 10.
+        debug (bool, optional): print extra debug information. Defaults to False.
+        num_users (int, optional): number of users of PROF/MEVShare. Defaults to 2.
+        kickback_percentage (float, optional): percentage of profit returned to MEVShare users. Defaults to .9.
+        min_volatility (float, optional): minimum volatility. Defaults to 0.01.
+        max_volatility (float, optional): maximum volatility. Defaults to 5.
+
+    Returns:
+        None
+    """
+    np.random.seed(0)
+    random.seed(0)
+
+    #TODO try to decrease ratio of user trades to liquidity
+    user_portfolio = 100
+    user_slippage = .8
+    arbitrager_portfolio = 10e7
+    pool_liquidity = 10e7
+
+
+    if volatilities is None:
+        if num_volatilities == 1:
+            volatilities = [(min_volatility+max_volatility)/2.]
+        else:
+            volatilities = [min_volatility+k*(max_volatility-min_volatility)/(num_volatilities-1) for k in range(0, num_volatilities)]
+    num_volatilities = len(volatilities)
+    if users_range is None:
+        users_range = list(range(min_users, max_users))
+    
+    scenarios_list = ['prof', 'prof_nokickback', 'mevs']
+
+    print("volatilities", volatilities)
+    print("users range", users_range)
+    raw_data_file = {}
+    for interval_num in range(num_volatilities):
+        raw_data_file[volatilities[interval_num]] = {}
+        for scenario in scenarios_list:
+            file_path = f"{file_location}{random_type}_{volatilities[interval_num]}vol_{scenario}_{users_range[0]}to{users_range[-1]}-{len(users_range)}users_{num_iters}iters_raw.csv"
+            assert(not os.path.exists(file_path))
+            raw_data_file[volatilities[interval_num]][scenario] = file_path
+    print("data_file=", raw_data_file)   
+    
+    def setup_preferences(scenarios,num_users,random_type='rndm'):
+        """setup users accounts and preferences
+
+        Args:
+            scenarios (list of strings): scenario names
+            random_type ('rndm' or 'same'): whether all users have different random preferences (rndm) or the 'same' random preference 
+
+        Returns:
+            None
+        """
+        preferences = {}
+        if random_type == 'same': #TODO delete??
+            prefs = [[logistic_function(np.random.normal(loc=0.0, scale=scale), .5, 1., 0.5) for _ in range(num_iters)] for scale in volatilities]
+        elif random_type == 'rndm': 
+            #every user gets a different random preference
+            prefs = [[[logistic_function(np.random.normal(loc=0.0, scale=scale), .5, 1., 0.5) for _ in range(num_iters)] for scale in volatilities] for _ in range(num_users) ]
+        elif random_type == 'simple': 
+            #users randomly have a preference for token a or token b
+            prefs = [[[ random.choice([0.0,2.0]) for n in range(num_iters)] for scale in volatilities] for _ in range(num_users) ]
+        elif random_type == 'random_walk_range': 
+            #random walk with max step
+            prefs = [[ limited_random_walk_range(scale, -scale, num_users, lambda x: x>1.0, lambda : random.choice([0.0,2.0]), num_users=num_users, vol=scale) for scale in volatilities] for n in range(num_iters)]
+            prefs = [[[ prefs[n][s][f] for n in range(num_iters)] for s in range(len(volatilities))] for f in range(num_users) ]
+        elif random_type == 'random_walk_range_relative': 
+            #random walk with max step that is relative to the number of users i.e. number of preferences
+            prefs = [[ limited_random_walk_range(max(scale*num_users, 1.0), min(-scale*num_users, -1.0), num_users, lambda x: x>1.0, lambda : random.choice([0.0,2.0]), num_users=num_users, vol=scale) for scale in volatilities] for n in range(num_iters)]
+            prefs = [[[ prefs[n][s][f] for n in range(num_iters)] for s in range(len(volatilities))] for f in range(num_users) ]
+        elif random_type == 'random_walk_scaled': 
+            #random walk with likelihood of next step dependent on distance from start
+            def random_foo(step, scale):
+                prob = [logistic_function(step, scale, 2,2), logistic_function(step, -scale, 2,2)]
+                val = random.choices([0.0,2.0], prob)[0]
+                return val
+
+            prefs = [[ limited_random_walk_scaled(num_users, lambda x: x>1.0, random_foo , scale) for scale in volatilities] for n in range(num_iters)]
+            prefs = [[[ prefs[n][s][f] for n in range(num_iters)] for s in range(len(volatilities))] for f in range(num_users) ]
+        elif random_type == 'max_demand': 
+            # limit user preferences based on max demand as defined in Budish et. al.
+            def direction_foo(x):
+                if x > 1.0:
+                    return 1
+                else: 
+                    return -1
+            prefs = [[ max_demand_sample(max(scale*math.sqrt(num_users), 1.0), min(-scale*math.sqrt(num_users), -1.0), num_users, direction_foo, lambda n: [random.choice([0.0,2.0]) for _ in range(n)], vol=scale ) for scale in volatilities] for n in range(num_iters)]
+            prefs = [[[ prefs[n][s][f] for n in range(num_iters)] for s in range(len(volatilities))] for f in range(num_users) ]
+        elif "max_demand_scale" in extra_params and random_type == f'max_demand_range_{extra_params["max_demand_scale"]}': 
+            # limit user preferences based on max demand as defined in Budish et. al. and max random walk step relative to the number of users
+            # i.e. max_demand and random_walk_range_relative combined
+            def direction_foo(x):
+                if x > 1.0:
+                    return 1
+                else: 
+                    return -1
+            def make_random_foo(max_scale):
+                return lambda nu: limited_random_walk_range(max(max_scale*nu, 1.0), min(-max_scale*nu, -1.0), nu, lambda x: x>1.0, lambda : random.choice([0.0,2.0]), num_users=nu, vol=max_scale)
+            max_demand_scale = extra_params['max_demand_scale']
+            prefs = [[ max_demand_sample(max(max_demand_scale*math.sqrt(num_users), 1.0), min(-max_demand_scale*math.sqrt(num_users), -1.0), num_users, direction_foo, make_random_foo(scale), vol=max_demand_scale ) for scale in volatilities] for n in range(num_iters)]
+            prefs = [[[ prefs[n][s][f] for n in range(num_iters)] for s in range(len(volatilities))] for f in range(num_users) ]
+        elif "max_demand_batch_size" in extra_params and random_type == f'max_demand_batches_{extra_params["max_demand_batch_size"]}':
+            # limit user preferences based on max demand as defined in Budish et. al.
+            # with smaller set batch sizes
+            batch_size = extra_params['max_demand_batch_size']
+            def direction_foo(x):
+                if x > 1.0:
+                    return 1
+                else: 
+                    return -1
+            def construct_batches(scale, nu, batch_size):
+                num_batches = int(nu/batch_size) + 1
+                pref = []
+                total = 0
+                for _ in range(num_batches):
+                    pref += max_demand_sample(max(scale*math.sqrt(batch_size), 1.0), min(-scale*math.sqrt(batch_size), -1.0), batch_size, direction_foo, lambda n: [random.choice([0.0,2.0]) for _ in range(n)], num_users=num_users, vol=scale)
+                return pref[:nu]
+            prefs = [[ construct_batches(scale, num_users, batch_size)  for scale in volatilities] for n in range(num_iters)]
+            prefs = [[[ prefs[n][s][f] for n in range(num_iters)] for s in range(len(volatilities))] for f in range(num_users) ]
+   
+        else:
+            raise Exception(f"random_type {random_type} not found")
+        assert len(prefs) == num_users
+        assert len(prefs[0]) == len(volatilities)
+        assert len(prefs[0][0]) == num_iters         
+        assert np.max(prefs) <= 2.0
+        assert np.min(prefs) >= 0.0
+
+        if debug:
+            print("prefs", prefs)
+            print("avg preference", np.average(prefs, axis = 2))
+            print("std preference", np.std(prefs, axis = 2))
+            print("max preference", np.max(prefs, axis = 2))
+            print("min preference", np.min(prefs, axis = 2))
+        get_pref = lambda p : [p, 2.0-p]
+        prefs = [[[get_pref(p) for p in v] for v in n] for n in prefs]
+        return prefs
+
+    def get_username(scenario, name, index):
+        return f"user_{scenario}_{name}_{index}"
+
+    def get_arbiname(scenario, name, index=''):
+        if scenario == 'mevs':
+            return f"arbi_{scenario}_{name}_{index}"
+        elif scenario == 'prof':
+            return f"arbi_{scenario}_{name}"
+        elif scenario == 'prof_nokickback':
+            raise Exception("prof_nokickback has no arbitrager")
+        else:
+            raise Exception(f"{scenario} scenario not found")
+
+    def setup_accounts(scenario, num_users, name):
+        user_accounts = {}
+        arbi_accounts = {}
+        for i in num_users: 
+            username = get_username(scenario,name,i)
+            user_accounts[username] = Account(username, [user_portfolio,user_portfolio])
+            if scenario == "mevs": #each user has their own arbitrager
+                arbi_username=get_arbiname(scenario,name,i)
+                arbi_accounts[arbi_username] =Account(arbi_username, [arbitrager_portfolio,arbitrager_portfolio])
+            elif scenario == 'prof': #one arbitrager for all
+                arbi_username=get_arbiname(scenario,name)
+                arbi_accounts[arbi_username] =Account(arbi_username, [arbitrager_portfolio,arbitrager_portfolio])   
+        return user_accounts,arbi_accounts
+
+    def index_user(arr, interval_num, user_num,iter_num,i=None):
+        if i is None:
+            return arr[interval_num][user_num][iter_num]
+        return arr[interval_num][user_num][iter_num][i]
+    
+
+    default_individual_users = [[[[None for _ in range(users_range[user_num])] for _ in range(num_iters)] for user_num in range(len(users_range))] for _ in range(num_volatilities)]
+    default_combined_users = [[[None for _ in range(num_iters)] for user_num in range(len(users_range))] for _ in range(num_volatilities)]
+
+    trade_amounts = copy.deepcopy(default_individual_users)
+    pref_amounts = copy.deepcopy(default_individual_users)
+
+    user_util_old = {}
+    user_util_new = {}
+    user_util_new_kickback = {}
+    user_util_diff = {}
+    arbi_portfoli_old = {}
+    arbi_util_old = {}
+    arbi_util_new = {}
+    arbi_util_diff = {}
+    for scenario in scenarios_list:
+        user_util_old[scenario] = copy.deepcopy(default_individual_users)
+        user_util_new[scenario] = copy.deepcopy(default_individual_users)
+        user_util_new_kickback[scenario]  = copy.deepcopy(default_individual_users)
+        user_util_diff[scenario]  = copy.deepcopy(default_individual_users)
+        if scenario == 'prof':
+            arbi_portfoli_old[scenario] = copy.deepcopy(default_combined_users)
+            arbi_util_old[scenario] = copy.deepcopy(default_combined_users)
+            arbi_util_new[scenario] = copy.deepcopy(default_combined_users)
+            arbi_util_diff[scenario] = copy.deepcopy(default_combined_users)
+        elif scenario == 'mevs':
+            arbi_portfoli_old[scenario] = copy.deepcopy(default_individual_users)
+            arbi_util_old[scenario] = copy.deepcopy(default_individual_users)
+            arbi_util_new[scenario] = copy.deepcopy(default_individual_users)
+            arbi_util_diff[scenario] = copy.deepcopy(default_individual_users)
+    
+    for user_num in range(len(users_range)):
+        num_users = users_range[user_num]
+        preferences = setup_preferences(scenarios_list, num_users, random_type)
+        for interval_num in range(num_volatilities):
+            for iter_num in range(num_iters):
+                for scenario in scenarios_list:
+                    print(f"-----------scenario: {scenario} | total users: {num_users} | volatitiy: {volatilities[interval_num]} ({iter_num})-----------")
+                    ordered_txs = []
+                    user_accounts,arb_accounts = setup_accounts(scenario, list(range(num_users)), num_users)
+                    accounts = {**user_accounts, **arb_accounts}
+                    chain1 = Chain(poolA=pool_liquidity, poolB=pool_liquidity, accounts=accounts, chainid=f"chain1")
+                    chain2 = Chain(static=1.0, accounts=arb_accounts, chainid=f"chain2") #only arbitragers use CEX
+                    #chain1
+
+                    #figure out what transactions each user will make
+                    for i in range(num_users): 
+                        pref = preferences[i][interval_num][iter_num]
+                        username = get_username(scenario,num_users,i)
+                        if random_type == 'rndm':
+                            user_util_old[scenario][interval_num][user_num][iter_num][i] = utility(pref, accounts[username].tokens)
+                            # index_user(user_util_old[scenario], interval_num, user_num, iter_num, i) = utility(pref, accounts[username].tokens)
+                            tx = make_trade(chain1, username, pref, optimal=False, accounts=accounts,
+                                                static_value=user_portfolio, scaled=True)
+                        else:
+                            user_util_old[scenario][interval_num][user_num][iter_num][i] = 0#sum(accounts[username].tokens)
+                            tx = make_trade(chain1, username, pref, optimal=False, accounts=accounts, 
+                                                static_value=user_portfolio, slippage_percentage=user_slippage)
+                        ordered_txs.append(tx)
+                        if scenario == scenarios_list[0]:
+                            trade_amounts[interval_num][user_num][iter_num][i] = abs(tx['qty'])
+                            pref_amounts[interval_num][user_num][iter_num][i] = pref[0]
+
+                    for i in range(num_users):
+                        tx = ordered_txs[i]
+                        try:
+                            #execute transaction
+                            chain1.apply(tx, debug=debug)
+                        except ExecutionException as e:
+                            username = tx['sndr']
+                            with open(f"{file_location}user_errors", 'a') as f:
+                                f.write(f"{username} {e}\n") 
+                            print(username, e)
+                            raise e
+                        if scenario == 'mevs': #execute arbitrage after every user tx
+                            try:
+                                arbi_username = get_arbiname(scenario, num_users, i)
+                                arbi_portfoli_old[scenario][interval_num][user_num][iter_num][i] = copy.copy(accounts[arbi_username].tokens)
+                                arbi_util_old[scenario][interval_num][user_num][iter_num][i] = sum(accounts[arbi_username].tokens)
+                                if abs(chain1.price('A')- chain2.price('A')) < abs(chain1.price('B')- chain2.price('B')):
+                                    tx1, tx2 = optimal_arbitrage_algebra(chain1, chain2, [0.0, 2.0], arbi_username)
+                                else:
+                                    tx1, tx2 = optimal_arbitrage_algebra(chain1, chain2, [2.0, 0.0], arbi_username)
+                                chain1.apply(tx1, debug=debug)
+                                chain2.apply(tx2, debug=debug)
+                            except ExecutionException as e:
+                                with open(f"{file_location}arbi_errors", 'a') as f:
+                                    f.write(f"{arbi_username} {e}\n") 
+                                print(arbi_username, e)
+                                raise e
+                    if scenario == 'prof': #execute arbitrage after all user tx
+                        arbi_username = get_arbiname(scenario, num_users)
+                        arbi_portfoli_old[scenario][interval_num][user_num][iter_num] = copy.copy(accounts[arbi_username].tokens)
+                        arbi_util_old[scenario][interval_num][user_num][iter_num] = sum(accounts[arbi_username].tokens)
+                        if abs(chain1.price('A')- chain2.price('A')) < abs(chain1.price('B')- chain2.price('B')):
+                            tx1, tx2 = optimal_arbitrage_algebra(chain1, chain2, [0.0, 2.0], arbi_username)
+                        else:
+                            tx1, tx2 = optimal_arbitrage_algebra(chain1, chain2, [2.0, 0.0], arbi_username)
+                        try:
+                            chain1.apply(tx1, debug=debug)
+                            chain2.apply(tx2, debug=debug)
+                        except ExecutionException as e:
+                            with open(f"{file_location}arbi_errors", 'a') as f:
+                                f.write(f"{arbi_username} {e}\n") 
+                            print(arbi_username, e)
+                            raise e
+
+                    #calculate utility for arbitrager
+                    if scenario == 'mevs':
+                        for i in range(num_users):
+                            arbi_username = get_arbiname(scenario, num_users, i)
+                            arbi_util_new[scenario][interval_num][user_num][iter_num][i] = sum(accounts[arbi_username].tokens)
+                            arbi_util_diff[scenario][interval_num][user_num][iter_num][i] =  arbi_util_new[scenario][interval_num][user_num][iter_num][i] -  arbi_util_old[scenario][interval_num][user_num][iter_num][i]
+                            if debug:
+                                print("utility", arbi_username, arbi_util_old[scenario][interval_num][user_num][iter_num][i], "->", arbi_util_new[scenario][interval_num][user_num][iter_num][i])
+                    elif scenario == 'prof':
+                        arbi_username = get_arbiname(scenario, num_users)
+                        arbi_util_new[scenario][interval_num][user_num][iter_num] = sum(accounts[arbi_username].tokens)
+                        arbi_util_diff[scenario][interval_num][user_num][iter_num] =  arbi_util_new[scenario][interval_num][user_num][iter_num] -  arbi_util_old[scenario][interval_num][user_num][iter_num]
+                        if debug:
+                            print("utility", arbi_username, arbi_util_old[scenario][interval_num][user_num][iter_num], "->", arbi_util_new[scenario][interval_num][user_num][iter_num])
+
+                    #calculate utility for user before kickbacks
+                    for i in range(num_users):
+                        username = get_username(scenario,num_users,i)
+                        if random_type == 'rndm':
+                            pref = preferences[i][interval_num][iter_num]
+                            user_util_new[scenario][interval_num][user_num][iter_num][i] = utility(pref, accounts[username].tokens)
+                        else:
+                            user_util_new[scenario][interval_num][user_num][iter_num][i] = sum(accounts[username].tokens)
+                        if debug:
+                            print("utility b4 kickback", username, user_util_old[scenario][interval_num][user_num][iter_num][i], "->", user_util_new[scenario][interval_num][user_num][iter_num][i])
+
+                    #execute kickbacks
+                    for i in range(num_users):
+                        username = get_username(scenario,num_users,i)
+                        if scenario == 'prof': #not no kickback prof
+                            arbi_username = get_arbiname(scenario, num_users)
+                            arbi_portfolio_A = accounts[arbi_username].tokens[0] - arbi_portfoli_old[scenario][interval_num][user_num][iter_num][0]
+                            arbi_portfolio_B = accounts[arbi_username].tokens[1] - arbi_portfoli_old[scenario][interval_num][user_num][iter_num][1]
+                            accounts[username].tokens[0] += arbi_portfolio_A*kickback_percentage/num_users 
+                            accounts[username].tokens[1] += arbi_portfolio_B*kickback_percentage/num_users
+                        elif scenario == 'mevs':
+                            arbi_username = get_arbiname(scenario, num_users, i)
+                            arbi_portfolio_A = accounts[arbi_username].tokens[0] - arbi_portfoli_old[scenario][interval_num][user_num][iter_num][i][0]
+                            arbi_portfolio_B = accounts[arbi_username].tokens[1] - arbi_portfoli_old[scenario][interval_num][user_num][iter_num][i][1]
+                            accounts[username].tokens[0] += arbi_portfolio_A*kickback_percentage 
+                            accounts[username].tokens[1] += arbi_portfolio_B*kickback_percentage
+
+                    #calculate utility with kickbacks
+                    for i in range(num_users): 
+                        username = get_username(scenario,num_users,i)
+                        if random_type == 'rndm':
+                            pref = preferences[i][interval_num][iter_num]
+                            user_util_new_kickback[scenario][interval_num][user_num][iter_num][i] = utility(pref, accounts[username].tokens)
+                        else:
+                            user_util_new_kickback[scenario][interval_num][user_num][iter_num][i] = sum(accounts[username].tokens)                        
+                        if debug and scenario != 'prof_nokickback':
+                            print("utility w/ kickback", username, user_util_old[scenario][interval_num][user_num][iter_num][i], "->", user_util_new_kickback[scenario][interval_num][user_num][iter_num][i])
+                        user_util_diff[scenario][interval_num][user_num][iter_num][i] = user_util_new_kickback[scenario][interval_num][user_num][iter_num][i] - user_util_old[scenario][interval_num][user_num][iter_num][i]
+                    #save raw data
+                    for i in range(num_users): 
+                        with open(raw_data_file[volatilities[interval_num]][scenario], "a") as f:
+                            f.write(f"{num_users},{i},{user_util_diff[scenario][interval_num][user_num][iter_num][i]}\n")
+
+    print("\n\n\n----------------------------------------results----------------------------------------")
+    print("volatilities", volatilities)
+    print("users range", users_range)
+    print()
+
+    def by_volatility(foo, arr):
+        return [foo([np.average(arr[v][u]) for u in range(len(arr[0])) ]) for v in range(len(arr))]
+
+    def by_users(foo,arr):
+        return [foo([np.average(arr[v][u]) for v in range(len(arr))]) for u in range(len(arr[0])) ]
+
+    def by_volatility_users(foo,arr):
+        return [[foo(arr[v][u]) for u in range(len(arr[0]))] for v in range(len(arr))]
+
+    for scenario in scenarios_list:     
+        util_user_diff_by_volatility_users_avg = by_volatility_users(np.average, user_util_diff[scenario])
+        util_user_diff_by_volatility_users_std = by_volatility_users(np.std, user_util_diff[scenario])
+        for j in range(num_volatilities):
+            print(f"user utility diff {scenario} avg {volatilities[j]} vol by users", util_user_diff_by_volatility_users_avg[j])
+            print(f"user utility diff {scenario} std {volatilities[j]} vol by users", util_user_diff_by_volatility_users_std[j])
+        print()
+        for i in range(len(users_range)):
+            print(f"user utility diff {scenario} avg {users_range[i]} users by vols", [util_user_diff_by_volatility_users_avg[j][i] for j in range(num_volatilities)])
+            print(f"user utility diff {scenario} std {users_range[i]} users by vols", [util_user_diff_by_volatility_users_std[j][i] for j in range(num_volatilities)])
+        print()
+        print()
+
+
+    if random_type == 'rndm':
+        pref_amounts_by_volatility_users_avg = by_volatility_users(np.average, pref_amounts)
+        pref_amounts_by_volatility_users_std = by_volatility_users(np.std, pref_amounts)
+        for j in range(num_volatilities):
+            print(f"avg preference {volatilities[j]} vol by users", pref_amounts_by_volatility_users_avg[j])
+            print(f"std preference {volatilities[j]} vol by users", pref_amounts_by_volatility_users_std[j])
+        for i in range(len(users_range)):
+            print(f"avg preference {users_range[i]} users by vols", [pref_amounts_by_volatility_users_avg[j][i] for j in range(num_volatilities)])
+            print(f"std preference {users_range[i]} users by vols", [pref_amounts_by_volatility_users_std[j][i] for j in range(num_volatilities)])
+        print()
+            
+        trade_amounts_by_volatility_users_avg = by_volatility_users(np.average, trade_amounts)
+        trade_amounts_by_volatility_users_std = by_volatility_users(np.std, trade_amounts)
+        for j in range(num_volatilities):
+            print(f"avg trade {volatilities[j]} vol by users", trade_amounts_by_volatility_users_avg[j])
+            print(f"std trade {volatilities[j]} vol by users", trade_amounts_by_volatility_users_std[j])
+        for i in range(len(users_range)):
+            print(f"avg trade {users_range[i]} users by vols", [trade_amounts_by_volatility_users_avg[j][i] for j in range(num_volatilities)])
+            print(f"std trade {users_range[i]} users by vols", [trade_amounts_by_volatility_users_std[j][i] for j in range(num_volatilities)])
+        print()
+
+    for scenario in ["prof", "mevs"]:     
+        arbitrage_amounts_by_volatility_users_avg = by_volatility_users(np.average, arbi_util_diff[scenario])
+        # arbitrage_amounts_by_volatility_users_std = by_volatility_users(np.std, arbi_util_diff[scenario])
+        for j in range(num_volatilities):
+            print(f"arbitrage {scenario} avg {volatilities[j]} vol by users", arbitrage_amounts_by_volatility_users_avg[j])
+            # print(f"arbitrage std {volatilities[j]} vol by users", arbitrage_amounts_by_volatility_users_std[j]) 
+        print()
+        for i in range(len(users_range)):
+            print(f"arbitrage {scenario} avg {users_range[i]} users by vols", [arbitrage_amounts_by_volatility_users_avg[j][i] for j in range(num_volatilities)])
+            # print(f"arbitrage std {users_range[i]} users by vols", [arbitrage_amounts_by_volatility_users_std[j][i] for j in range(num_volatilities)])           
+        print()
+        print()
+
+    for func in random_walk_stats:
+        print(f'random_walk_stats: {func} measuring {random_walk_stats[func]["measuring"]}')
+        for a in random_walk_stats[func]:
+            if a != "measuring" and a != "index":
+                for b in random_walk_stats[func][a]:
+                    rw_avg = np.average(random_walk_stats[func][a][b])
+                    rw_std = np.std(random_walk_stats[func][a][b])
+                    rw_max = np.max(random_walk_stats[func][a][b])
+                    rw_min = np.min(random_walk_stats[func][a][b])
+                    print(f'\t{a} {random_walk_stats[func]["index"]} {b} vol: avg {round(rw_avg,4)} std {round(rw_std,4)} min {rw_min} max {rw_max}')
+        print()
+    global figure_num
+    if len(random_walk_stats.keys()) > 0:
+        for func in random_walk_stats:
+            fig = plt.figure(figure_num)
+            ax = fig.add_subplot()
+            for a in random_walk_stats[func]:
+                if a != "measuring" and a != "index":
+                    indexes = list(random_walk_stats[func][a].keys())
+                    averages = [np.average(random_walk_stats[func][a][b]) for b in random_walk_stats[func][a]]
+                    stds = [np.std(random_walk_stats[func][a][b]) for b in random_walk_stats[func][a]]
+                    ax.errorbar(indexes, averages, yerr=stds,  label = f'{a} {random_walk_stats[func]["index"]}')
+                ax.set_xlabel("volatilities")
+                ax.set_ylabel(random_walk_stats[func]["measuring"])
+                plt.title(f"random walk stats for {func}")
+                plt.legend()
+            figure_num+=1
+
+    return raw_data_file
+
+def scenario_arbitrage_DEXDEX(random_type='rndm',file_location='tmp_data/',num_iters=10, kickback_percentage=.9, debug=False, min_users=2, max_users=20, users_range=None, 
+        min_volatility=0.01, max_volatility=2, num_volatilities=10, volatilities=None, extra_params={"max_demand_scale":4, 'max_demand_batch_size': 5}):
+    """Run arbitrage simulation
+
+    Args:
+        num_volatilities (int, optional): number of volatilities to try. Defaults to 10.
+        num_iters (int, optional): number of iterations of each volatility. Defaults to 10.
+        debug (bool, optional): print extra debug information. Defaults to False.
+        num_users (int, optional): number of users of PROF/MEVShare. Defaults to 2.
+        kickback_percentage (float, optional): percentage of profit returned to MEVShare users. Defaults to .9.
+        min_volatility (float, optional): minimum volatility. Defaults to 0.01.
+        max_volatility (float, optional): maximum volatility. Defaults to 5.
+
+    Returns:
+        None
+    """
+    np.random.seed(0)
+    random.seed(0)
+
+    #TODO try to decrease ratio of user trades to liquidity
+    user_portfolio = 1000
+    user_slippage = .8
+    arbitrager_portfolio = 10e7
+    pool_liquidity = 10e7
+
+
+    if volatilities is None:
+        if num_volatilities == 1:
+            volatilities = [(min_volatility+max_volatility)/2.]
+        else:
+            volatilities = [min_volatility+k*(max_volatility-min_volatility)/(num_volatilities-1) for k in range(0, num_volatilities)]
+    num_volatilities = len(volatilities)
+    if users_range is None:
+        users_range = list(range(min_users, max_users))
+    
+    scenarios_list = ['prof', 'prof_nokickback', 'mevs']
+
+    print("volatilities", volatilities)
+    print("users range", users_range)
+    raw_data_file = {}
+    for interval_num in range(num_volatilities):
+        raw_data_file[volatilities[interval_num]] = {}
+        for scenario in scenarios_list:
+            file_path = f"{file_location}{random_type}_{volatilities[interval_num]}vol_{scenario}_{users_range[0]}to{users_range[-1]}-{len(users_range)}users_{num_iters}iters_raw.csv"
+            assert(not os.path.exists(file_path))
+            raw_data_file[volatilities[interval_num]][scenario] = file_path
+    print("data_file=", raw_data_file)   
+    
+    def setup_preferences(scenarios,num_users,random_type='rndm'):
+        """setup users accounts and preferences
+
+        Args:
+            scenarios (list of strings): scenario names
+            random_type ('rndm' or 'same'): whether all users have different random preferences (rndm) or the 'same' random preference 
+
+        Returns:
+            None
+        """
+        preferences = {}
+        if random_type == 'same': #TODO delete??
+            prefs = [[logistic_function(np.random.normal(loc=0.0, scale=scale), .5, 1., 0.5) for _ in range(num_iters)] for scale in volatilities]
+        elif random_type == 'rndm': 
+            #every user gets a different random preference
+            prefs = [[[logistic_function(np.random.normal(loc=0.0, scale=scale), .5, 1., 0.5) for _ in range(num_iters)] for scale in volatilities] for _ in range(num_users) ]
+        elif random_type == 'simple': 
+            #users randomly have a preference for token a or token b
+            prefs = [[[ random.choice([0.0,2.0]) for n in range(num_iters)] for scale in volatilities] for _ in range(num_users) ]
+        elif random_type == 'random_walk_range': 
+            #random walk with max step
+            prefs = [[ limited_random_walk_range(scale, -scale, num_users, lambda x: x>1.0, lambda : random.choice([0.0,2.0]), num_users=num_users, vol=scale) for scale in volatilities] for n in range(num_iters)]
+            prefs = [[[ prefs[n][s][f] for n in range(num_iters)] for s in range(len(volatilities))] for f in range(num_users) ]
+        elif random_type == 'random_walk_range_relative': 
+            #random walk with max step that is relative to the number of users i.e. number of preferences
+            prefs = [[ limited_random_walk_range(max(scale*num_users, 1.0), min(-scale*num_users, -1.0), num_users, lambda x: x>1.0, lambda : random.choice([0.0,2.0]), num_users=num_users, vol=scale) for scale in volatilities] for n in range(num_iters)]
+            prefs = [[[ prefs[n][s][f] for n in range(num_iters)] for s in range(len(volatilities))] for f in range(num_users) ]
+        elif random_type == 'random_walk_scaled': 
+            #random walk with likelihood of next step dependent on distance from start
+            def random_foo(step, scale):
+                prob = [logistic_function(step, scale, 2,2), logistic_function(step, -scale, 2,2)]
+                val = random.choices([0.0,2.0], prob)[0]
+                return val
+
+            prefs = [[ limited_random_walk_scaled(num_users, lambda x: x>1.0, random_foo , scale) for scale in volatilities] for n in range(num_iters)]
+            prefs = [[[ prefs[n][s][f] for n in range(num_iters)] for s in range(len(volatilities))] for f in range(num_users) ]
+        elif random_type == 'max_demand': 
+            # limit user preferences based on max demand as defined in Budish et. al.
+            def direction_foo(x):
+                if x > 1.0:
+                    return 1
+                else: 
+                    return -1
+            prefs = [[ max_demand_sample(max(scale*math.sqrt(num_users), 1.0), min(-scale*math.sqrt(num_users), -1.0), num_users, direction_foo, lambda n: [random.choice([0.0,2.0]) for _ in range(n)], vol=scale ) for scale in volatilities] for n in range(num_iters)]
+            prefs = [[[ prefs[n][s][f] for n in range(num_iters)] for s in range(len(volatilities))] for f in range(num_users) ]
+        elif "max_demand_scale" in extra_params and random_type == f'max_demand_range_{extra_params["max_demand_scale"]}': 
+            # limit user preferences based on max demand as defined in Budish et. al. and max random walk step relative to the number of users
+            # i.e. max_demand and random_walk_range_relative combined
+            def direction_foo(x):
+                if x > 1.0:
+                    return 1
+                else: 
+                    return -1
+            def make_random_foo(max_scale):
+                return lambda nu: limited_random_walk_range(max(max_scale*nu, 1.0), min(-max_scale*nu, -1.0), nu, lambda x: x>1.0, lambda : random.choice([0.0,2.0]), num_users=nu, vol=max_scale)
+            max_demand_scale = extra_params['max_demand_scale']
+            prefs = [[ max_demand_sample(max(max_demand_scale*math.sqrt(num_users), 1.0), min(-max_demand_scale*math.sqrt(num_users), -1.0), num_users, direction_foo, make_random_foo(scale), vol=max_demand_scale ) for scale in volatilities] for n in range(num_iters)]
+            prefs = [[[ prefs[n][s][f] for n in range(num_iters)] for s in range(len(volatilities))] for f in range(num_users) ]
+        elif "max_demand_batch_size" in extra_params and random_type == f'max_demand_batches_{extra_params["max_demand_batch_size"]}':
+            # limit user preferences based on max demand as defined in Budish et. al.
+            # with smaller set batch sizes
+            batch_size = extra_params['max_demand_batch_size']
+            def direction_foo(x):
+                if x > 1.0:
+                    return 1
+                else: 
+                    return -1
+            def construct_batches(scale, nu, batch_size):
+                num_batches = int(nu/batch_size) + 1
+                pref = []
+                total = 0
+                for _ in range(num_batches):
+                    pref += max_demand_sample(max(scale*math.sqrt(batch_size), 1.0), min(-scale*math.sqrt(batch_size), -1.0), batch_size, direction_foo, lambda n: [random.choice([0.0,2.0]) for _ in range(n)], num_users=num_users, vol=scale)
+                return pref[:nu]
+            prefs = [[ construct_batches(scale, num_users, batch_size)  for scale in volatilities] for n in range(num_iters)]
+            prefs = [[[ prefs[n][s][f] for n in range(num_iters)] for s in range(len(volatilities))] for f in range(num_users) ]
+   
+        else:
+            raise Exception(f"random_type {random_type} not found")
+        assert len(prefs) == num_users
+        assert len(prefs[0]) == len(volatilities)
+        assert len(prefs[0][0]) == num_iters         
+        assert np.max(prefs) <= 2.0
+        assert np.min(prefs) >= 0.0
+
+        if debug:
+            print("prefs", prefs)
+            print("avg preference", np.average(prefs, axis = 2))
+            print("std preference", np.std(prefs, axis = 2))
+            print("max preference", np.max(prefs, axis = 2))
+            print("min preference", np.min(prefs, axis = 2))
+        get_pref = lambda p : [p, 2.0-p]
+        prefs = [[[get_pref(p) for p in v] for v in n] for n in prefs]
+        return prefs
+
+    def get_username(scenario, name, index):
+        return f"user_{scenario}_{name}_{index}"
+
+    def get_arbiname(scenario, name, index=''):
+        if scenario == 'mevs':
+            return f"arbi_{scenario}_{name}_{index}"
+        elif scenario == 'prof':
+            return f"arbi_{scenario}_{name}"
+        elif scenario == 'prof_nokickback':
+            raise Exception("prof_nokickback has no arbitrager")
+        else:
+            raise Exception(f"{scenario} scenario not found")
+
+    def setup_accounts(scenario, num_users, name):
+        user_accounts = {}
+        arbi_accounts = {}
+        for i in num_users: 
+            username = get_username(scenario,name,i)
+            user_accounts[username] = Account(username, [user_portfolio,user_portfolio])
+            if scenario == "mevs": #each user has their own arbitrager
+                arbi_username=get_arbiname(scenario,name,i)
+                arbi_accounts[arbi_username] =Account(arbi_username, [arbitrager_portfolio,arbitrager_portfolio])
+            elif scenario == 'prof': #one arbitrager for all
+                arbi_username=get_arbiname(scenario,name)
+                arbi_accounts[arbi_username] =Account(arbi_username, [arbitrager_portfolio,arbitrager_portfolio])   
+        return user_accounts,arbi_accounts
+
+    def index_user(arr, interval_num, user_num,iter_num,i=None):
+        if i is None:
+            return arr[interval_num][user_num][iter_num]
+        return arr[interval_num][user_num][iter_num][i]
+    
+
+    default_individual_users = [[[[None for _ in range(users_range[user_num])] for _ in range(num_iters)] for user_num in range(len(users_range))] for _ in range(num_volatilities)]
+    default_combined_users = [[[None for _ in range(num_iters)] for user_num in range(len(users_range))] for _ in range(num_volatilities)]
+
+    trade_amounts = copy.deepcopy(default_individual_users)
+    pref_amounts = copy.deepcopy(default_individual_users)
+
+    user_util_old = {}
+    user_util_new = {}
+    user_util_new_kickback = {}
+    user_util_diff = {}
+    arbi_portfoli_old = {}
+    arbi_util_old = {}
+    arbi_util_new = {}
+    arbi_util_diff = {}
+    for scenario in scenarios_list:
+        user_util_old[scenario] = copy.deepcopy(default_individual_users)
+        user_util_new[scenario] = copy.deepcopy(default_individual_users)
+        user_util_new_kickback[scenario]  = copy.deepcopy(default_individual_users)
+        user_util_diff[scenario]  = copy.deepcopy(default_individual_users)
+        if scenario == 'prof':
+            arbi_portfoli_old[scenario] = copy.deepcopy(default_combined_users)
+            arbi_util_old[scenario] = copy.deepcopy(default_combined_users)
+            arbi_util_new[scenario] = copy.deepcopy(default_combined_users)
+            arbi_util_diff[scenario] = copy.deepcopy(default_combined_users)
+        elif scenario == 'mevs':
+            arbi_portfoli_old[scenario] = copy.deepcopy(default_individual_users)
+            arbi_util_old[scenario] = copy.deepcopy(default_individual_users)
+            arbi_util_new[scenario] = copy.deepcopy(default_individual_users)
+            arbi_util_diff[scenario] = copy.deepcopy(default_individual_users)
+    
+    for user_num in range(len(users_range)):
+        num_users = users_range[user_num]
+        preferences = setup_preferences(scenarios_list, num_users, random_type)
+        chain_pref = [random.choice([0,1]) for _ in range(num_users)]
+        for interval_num in range(num_volatilities):
+            for iter_num in range(num_iters):
+                for scenario in scenarios_list:
+                    print(f"-----------scenario: {scenario} | total users: {num_users} | volatitiy: {volatilities[interval_num]} ({iter_num})-----------")
+                    ordered_txs = []
+                    user_accounts,arb_accounts = setup_accounts(scenario, list(range(num_users)), num_users)
+                    accounts = {**user_accounts, **arb_accounts}
+                    chain1 = Chain(poolA=pool_liquidity, poolB=pool_liquidity, accounts=accounts, chainid=f"chain1")
+                    chain2 = Chain(poolA=pool_liquidity, poolB=pool_liquidity, accounts=accounts, chainid=f"chain2")
+                    chains = [chain1, chain2]
+
+                    #figure out what transactions each user will make
+                    for i in range(num_users): 
+                        user_chain = chains[chain_pref[i]]
+                        other_chain = chains[chain_pref[i]-1]
+                        pref = preferences[i][interval_num][iter_num]
+                        username = get_username(scenario,num_users,i)
+                        if random_type == 'rndm':
+                            user_util_old[scenario][interval_num][user_num][iter_num][i] = utility(pref, accounts[username].tokens)
+                            # index_user(user_util_old[scenario], interval_num, user_num, iter_num, i) = utility(pref, accounts[username].tokens)
+                            tx = make_trade(user_chain, username, pref, optimal=False, accounts=accounts,
+                                                static_value=user_portfolio, scaled=True)
+                        else:
+                            user_util_old[scenario][interval_num][user_num][iter_num][i] = 0#sum(accounts[username].tokens)
+                            tx = make_trade(user_chain, username, pref, optimal=False, accounts=accounts, 
+                                                static_value=user_portfolio, slippage_percentage=user_slippage)
+                        ordered_txs.append((tx, user_chain, other_chain))
+                        if scenario == scenarios_list[0]:
+                            trade_amounts[interval_num][user_num][iter_num][i] = abs(tx['qty'])
+                            pref_amounts[interval_num][user_num][iter_num][i] = pref[0]
+
+                    for i in range(num_users):
+                        tx, user_chain, other_chain = ordered_txs[i]
+                        try:
+                            #execute transaction
+                            user_chain.apply(tx, debug=debug)
+                        except ExecutionException as e:
+                            username = tx['sndr']
+                            with open(f"{file_location}user_errors", 'a') as f:
+                                f.write(f"{username} {e}\n") 
+                            print(username, e)
+                            raise e
+                        if scenario == 'mevs': #execute arbitrage after every user tx
+                            try:
+                                arbi_username = get_arbiname(scenario, num_users, i)
+                                arbi_portfoli_old[scenario][interval_num][user_num][iter_num][i] = copy.copy(accounts[arbi_username].tokens)
+                                arbi_util_old[scenario][interval_num][user_num][iter_num][i] = sum(accounts[arbi_username].tokens)
+                                if abs(user_chain.price('A')- other_chain.price('A')) < abs(user_chain.price('B')- other_chain.price('B')):
+                                    tx1, tx2 = optimal_arbitrage_algebra(user_chain, other_chain, [0.0, 2.0], arbi_username)
+                                else:
+                                    tx1, tx2 = optimal_arbitrage_algebra(user_chain, other_chain, [2.0, 0.0], arbi_username)
+                                user_chain.apply(tx1, debug=debug)
+                                other_chain.apply(tx2, debug=debug)
+                            except ExecutionException as e:
+                                with open(f"{file_location}arbi_errors", 'a') as f:
+                                    f.write(f"{arbi_username} {e}\n") 
+                                print(arbi_username, e)
+                                raise e
+                    if scenario == 'prof': #execute arbitrage after all user tx
+                        arbi_username = get_arbiname(scenario, num_users)
+                        arbi_portfoli_old[scenario][interval_num][user_num][iter_num] = copy.copy(accounts[arbi_username].tokens)
+                        arbi_util_old[scenario][interval_num][user_num][iter_num] = sum(accounts[arbi_username].tokens)
+                        if abs(chain1.price('A')- chain2.price('A')) < abs(chain1.price('B')- chain2.price('B')):
+                            tx1, tx2 = optimal_arbitrage_algebra(chain1, chain2, [0.0, 2.0], arbi_username)
+                        else:
+                            tx1, tx2 = optimal_arbitrage_algebra(chain1, chain2, [2.0, 0.0], arbi_username)
+                        try:
+                            chain1.apply(tx1, debug=debug)
+                            chain2.apply(tx2, debug=debug)
+                        except ExecutionException as e:
+                            with open(f"{file_location}arbi_errors", 'a') as f:
+                                f.write(f"{arbi_username} {e}\n") 
+                            print(arbi_username, e)
+                            raise e
+
+                    #calculate utility for arbitrager
+                    if scenario == 'mevs':
+                        for i in range(num_users):
+                            arbi_username = get_arbiname(scenario, num_users, i)
+                            arbi_util_new[scenario][interval_num][user_num][iter_num][i] = sum(accounts[arbi_username].tokens)
+                            arbi_util_diff[scenario][interval_num][user_num][iter_num][i] =  arbi_util_new[scenario][interval_num][user_num][iter_num][i] -  arbi_util_old[scenario][interval_num][user_num][iter_num][i]
+                            if debug:
+                                print("utility", arbi_username, arbi_util_old[scenario][interval_num][user_num][iter_num][i], "->", arbi_util_new[scenario][interval_num][user_num][iter_num][i])
+                    elif scenario == 'prof':
+                        arbi_username = get_arbiname(scenario, num_users)
+                        arbi_util_new[scenario][interval_num][user_num][iter_num] = sum(accounts[arbi_username].tokens)
+                        arbi_util_diff[scenario][interval_num][user_num][iter_num] =  arbi_util_new[scenario][interval_num][user_num][iter_num] -  arbi_util_old[scenario][interval_num][user_num][iter_num]
+                        if debug:
+                            print("utility", arbi_username, arbi_util_old[scenario][interval_num][user_num][iter_num], "->", arbi_util_new[scenario][interval_num][user_num][iter_num])
+
+                    #calculate utility for user before kickbacks
+                    for i in range(num_users):
+                        username = get_username(scenario,num_users,i)
+                        if random_type == 'rndm':
+                            pref = preferences[i][interval_num][iter_num]
+                            user_util_new[scenario][interval_num][user_num][iter_num][i] = utility(pref, accounts[username].tokens)
+                        else:
+                            user_util_new[scenario][interval_num][user_num][iter_num][i] = sum(accounts[username].tokens)
+                        if debug:
+                            print("utility b4 kickback", username, user_util_old[scenario][interval_num][user_num][iter_num][i], "->", user_util_new[scenario][interval_num][user_num][iter_num][i])
+
+                    #execute kickbacks
+                    for i in range(num_users):
+                        username = get_username(scenario,num_users,i)
+                        if scenario == 'prof': #not no kickback prof
+                            arbi_username = get_arbiname(scenario, num_users)
+                            arbi_portfolio_A = accounts[arbi_username].tokens[0] - arbi_portfoli_old[scenario][interval_num][user_num][iter_num][0]
+                            arbi_portfolio_B = accounts[arbi_username].tokens[1] - arbi_portfoli_old[scenario][interval_num][user_num][iter_num][1]
+                            accounts[username].tokens[0] += arbi_portfolio_A*kickback_percentage/num_users 
+                            accounts[username].tokens[1] += arbi_portfolio_B*kickback_percentage/num_users
+                        elif scenario == 'mevs':
+                            arbi_username = get_arbiname(scenario, num_users, i)
+                            arbi_portfolio_A = accounts[arbi_username].tokens[0] - arbi_portfoli_old[scenario][interval_num][user_num][iter_num][i][0]
+                            arbi_portfolio_B = accounts[arbi_username].tokens[1] - arbi_portfoli_old[scenario][interval_num][user_num][iter_num][i][1]
+                            accounts[username].tokens[0] += arbi_portfolio_A*kickback_percentage 
+                            accounts[username].tokens[1] += arbi_portfolio_B*kickback_percentage
+
+                    #calculate utility with kickbacks
+                    for i in range(num_users): 
+                        username = get_username(scenario,num_users,i)
+                        if random_type == 'rndm':
+                            pref = preferences[i][interval_num][iter_num]
+                            user_util_new_kickback[scenario][interval_num][user_num][iter_num][i] = utility(pref, accounts[username].tokens)
+                        else:
+                            user_util_new_kickback[scenario][interval_num][user_num][iter_num][i] = sum(accounts[username].tokens)                        
+                        if debug and scenario != 'prof_nokickback':
+                            print("utility w/ kickback", username, user_util_old[scenario][interval_num][user_num][iter_num][i], "->", user_util_new_kickback[scenario][interval_num][user_num][iter_num][i])
+                        user_util_diff[scenario][interval_num][user_num][iter_num][i] = user_util_new_kickback[scenario][interval_num][user_num][iter_num][i] - user_util_old[scenario][interval_num][user_num][iter_num][i]
+                    #save raw data
+                    for i in range(num_users): 
+                        with open(raw_data_file[volatilities[interval_num]][scenario], "a") as f:
+                            f.write(f"{num_users},{i},{user_util_diff[scenario][interval_num][user_num][iter_num][i]}\n")
+
+    print("\n\n\n----------------------------------------results----------------------------------------")
+    print("volatilities", volatilities)
+    print("users range", users_range)
+    print()
+
+    def by_volatility(foo, arr):
+        return [foo([np.average(arr[v][u]) for u in range(len(arr[0])) ]) for v in range(len(arr))]
+
+    def by_users(foo,arr):
+        return [foo([np.average(arr[v][u]) for v in range(len(arr))]) for u in range(len(arr[0])) ]
+
+    def by_volatility_users(foo,arr):
+        return [[foo(arr[v][u]) for u in range(len(arr[0]))] for v in range(len(arr))]
+
+    for scenario in scenarios_list:     
+        util_user_diff_by_volatility_users_avg = by_volatility_users(np.average, user_util_diff[scenario])
+        util_user_diff_by_volatility_users_std = by_volatility_users(np.std, user_util_diff[scenario])
+        for j in range(num_volatilities):
+            print(f"user utility diff {scenario} avg {volatilities[j]} vol by users", util_user_diff_by_volatility_users_avg[j])
+            print(f"user utility diff {scenario} std {volatilities[j]} vol by users", util_user_diff_by_volatility_users_std[j])
+        print()
+        for i in range(len(users_range)):
+            print(f"user utility diff {scenario} avg {users_range[i]} users by vols", [util_user_diff_by_volatility_users_avg[j][i] for j in range(num_volatilities)])
+            print(f"user utility diff {scenario} std {users_range[i]} users by vols", [util_user_diff_by_volatility_users_std[j][i] for j in range(num_volatilities)])
+        print()
+        print()
+
+
+    if random_type == 'rndm':
+        pref_amounts_by_volatility_users_avg = by_volatility_users(np.average, pref_amounts)
+        pref_amounts_by_volatility_users_std = by_volatility_users(np.std, pref_amounts)
+        for j in range(num_volatilities):
+            print(f"avg preference {volatilities[j]} vol by users", pref_amounts_by_volatility_users_avg[j])
+            print(f"std preference {volatilities[j]} vol by users", pref_amounts_by_volatility_users_std[j])
+        for i in range(len(users_range)):
+            print(f"avg preference {users_range[i]} users by vols", [pref_amounts_by_volatility_users_avg[j][i] for j in range(num_volatilities)])
+            print(f"std preference {users_range[i]} users by vols", [pref_amounts_by_volatility_users_std[j][i] for j in range(num_volatilities)])
+        print()
+            
+        trade_amounts_by_volatility_users_avg = by_volatility_users(np.average, trade_amounts)
+        trade_amounts_by_volatility_users_std = by_volatility_users(np.std, trade_amounts)
+        for j in range(num_volatilities):
+            print(f"avg trade {volatilities[j]} vol by users", trade_amounts_by_volatility_users_avg[j])
+            print(f"std trade {volatilities[j]} vol by users", trade_amounts_by_volatility_users_std[j])
+        for i in range(len(users_range)):
+            print(f"avg trade {users_range[i]} users by vols", [trade_amounts_by_volatility_users_avg[j][i] for j in range(num_volatilities)])
+            print(f"std trade {users_range[i]} users by vols", [trade_amounts_by_volatility_users_std[j][i] for j in range(num_volatilities)])
+        print()
+
+    for scenario in ["prof", "mevs"]:     
+        arbitrage_amounts_by_volatility_users_avg = by_volatility_users(np.average, arbi_util_diff[scenario])
+        # arbitrage_amounts_by_volatility_users_std = by_volatility_users(np.std, arbi_util_diff[scenario])
+        for j in range(num_volatilities):
+            print(f"arbitrage {scenario} avg {volatilities[j]} vol by users", arbitrage_amounts_by_volatility_users_avg[j])
+            # print(f"arbitrage std {volatilities[j]} vol by users", arbitrage_amounts_by_volatility_users_std[j]) 
+        print()
+        for i in range(len(users_range)):
+            print(f"arbitrage {scenario} avg {users_range[i]} users by vols", [arbitrage_amounts_by_volatility_users_avg[j][i] for j in range(num_volatilities)])
+            # print(f"arbitrage std {users_range[i]} users by vols", [arbitrage_amounts_by_volatility_users_std[j][i] for j in range(num_volatilities)])           
+        print()
+        print()
+
+    for func in random_walk_stats:
+        print(f'random_walk_stats: {func} measuring {random_walk_stats[func]["measuring"]}')
+        for a in random_walk_stats[func]:
+            if a != "measuring" and a != "index":
+                for b in random_walk_stats[func][a]:
+                    rw_avg = np.average(random_walk_stats[func][a][b])
+                    rw_std = np.std(random_walk_stats[func][a][b])
+                    rw_max = np.max(random_walk_stats[func][a][b])
+                    rw_min = np.min(random_walk_stats[func][a][b])
+                    print(f'\t{a} {random_walk_stats[func]["index"]} {b} vol: avg {round(rw_avg,4)} std {round(rw_std,4)} min {rw_min} max {rw_max}')
+        print()
+    global figure_num
+    if len(random_walk_stats.keys()) > 0:
+        for func in random_walk_stats:
+            fig = plt.figure(figure_num)
+            ax = fig.add_subplot()
+            for a in random_walk_stats[func]:
+                if a != "measuring" and a != "index":
+                    indexes = list(random_walk_stats[func][a].keys())
+                    averages = [np.average(random_walk_stats[func][a][b]) for b in random_walk_stats[func][a]]
+                    stds = [np.std(random_walk_stats[func][a][b]) for b in random_walk_stats[func][a]]
+                    ax.errorbar(indexes, averages, yerr=stds,  label = f'{a} {random_walk_stats[func]["index"]}')
+                ax.set_xlabel("volatilities")
+                ax.set_ylabel(random_walk_stats[func]["measuring"])
+                plt.title(f"random walk stats for {func}")
+                plt.legend()
+            figure_num+=1
+
+    return raw_data_file
+
+def scenario_arbitrage_by_mean(random_type='same', num_intervals=10, num_iters=10, debug=False, num_prof_users=2, kickback_percentage=.9, min_volatility=0.01, max_volatility=2):
     """Run arbitrage simulation
 
     Args:
@@ -2341,7 +3341,7 @@ def scenario_arbitrage_by_mean(random_type='same', num_intervals=10, num_iters=1
         num_iters (int, optional): number of iterations of each volatility. Defaults to 10.
         debug (bool, optional): print extra debug information. Defaults to False.
         max_prof_users (int, optional): max number of users of PROF/MEVShare. Defaults to 2.
-        mevshare_percentage (float, optional): percentage of profit returned to MEVShare users. Defaults to .9.
+        kickback_percentage (float, optional): percentage of profit returned to MEVShare users. Defaults to .9.
         min_volatility (float, optional): minimum volatility. Defaults to 0.01.
         max_volatility (float, optional): maximum volatility. Defaults to 5.
 
@@ -2465,7 +3465,7 @@ def scenario_arbitrage_by_mean(random_type='same', num_intervals=10, num_iters=1
                                 chain1.apply(tx1)
                                 chain2.apply(tx2)
                         except ExecutionException as e:
-                            with open('user_errors2', 'a') as f:
+                            with open('final_data/user_errors', 'a') as f:
                                 f.write(f'{username} {e}\n')
                             print(username, e)
                             pass
@@ -2515,9 +3515,9 @@ def scenario_arbitrage_by_mean(random_type='same', num_intervals=10, num_iters=1
                         elif scenario == 'mevs':
                             attacker_username=f"arbi_{scenario}_{mean}_{i}"
                             profit = [accounts[attacker_username].tokens[0] - tokens[attacker_username][0], accounts[attacker_username].tokens[1] - tokens[attacker_username][1]]
-                            print(f"arbitrage profit {attacker_username} -> {username}: {profit} * {mevshare_percentage} = {[profit[0]*mevshare_percentage, profit[1]*mevshare_percentage]}")
-                            accounts[username].tokens[0] += profit[0]*mevshare_percentage
-                            accounts[username].tokens[1] += profit[1]*mevshare_percentage
+                            print(f"arbitrage profit {attacker_username} -> {username}: {profit} * {kickback_percentage} = {[profit[0]*kickback_percentage, profit[1]*kickback_percentage]}")
+                            accounts[username].tokens[0] += profit[0]*kickback_percentage
+                            accounts[username].tokens[1] += profit[1]*kickback_percentage
 
                     #calculate utility with kickbacks
                     for i in range(num_prof_users): 
@@ -2530,7 +3530,7 @@ def scenario_arbitrage_by_mean(random_type='same', num_intervals=10, num_iters=1
                         util_diff_individual_users[scenario][i] = util_new_kickback[username][interval_num][iter_num] - util_old[username][interval_num][iter_num]
                 for i in range(num_prof_users):
                     if util_diff_individual_users['prof_nokickback'][i] > util_diff_individual_users['mevs'][i]:
-                        with open("logs/example_users2", "a") as f:
+                        with open("final_data/example_users", "a") as f:
                             f.write(f"-----------scenario: {scenario} | user preferences: {mean} | volatitiy: {volatilities[interval_num]} ({iter_num})-----------")
                             f.write(f"\nuser_prof_nokickback_{mean}_{i} {util_diff_individual_users['prof_nokickback'][i]}")
                             f.write(f"\nuser_mevs_{mean}_{i} {util_diff_individual_users['mevs'][i]}")
@@ -2559,7 +3559,7 @@ def scenario_arbitrage_by_mean(random_type='same', num_intervals=10, num_iters=1
             plt.plot(volatilities, util_diff_avg_users_kickback[f'{scenario}_{mean}'], label = f'{scenario}')
         plt.xlabel('volatility (std of preferences)')
         plt.ylabel('difference in net utility')
-        plt.title(f'average difference in net utility \nuser preferences avg\'{mean}\'\nmevshare percent {mevshare_percentage}')
+        plt.title(f'average difference in net utility \nuser preferences avg\'{mean}\'\nmevshare percent {kickback_percentage}')
         # plt.xscale("log")
         plt.legend([f'{s}' for s in ['prof', 'mevshare', 'prof_nokickback']])
         figure_num+=1
@@ -2577,11 +3577,11 @@ def scenario_arbitrage_by_mean(random_type='same', num_intervals=10, num_iters=1
                     plt.plot(volatilities, util_diff_individual_users_kickback[f'{scenario}_{mean}'][i], label = f'{scenario}')
                 plt.xlabel('volatility (std of preferences)')
                 plt.ylabel(f'difference in net utility')
-                plt.title(f'difference in net utility, user preferences \'{mean}\'\nuser {i}, mevshare percent {mevshare_percentage}')
+                plt.title(f'difference in net utility, user preferences \'{mean}\'\nuser {i}, mevshare percent {kickback_percentage}')
                 plt.legend([f'{s}' for s in ['prof', 'mevshare', 'prof_nokickback']])
                 figure_num+=1
 
-def scenario_exhaustive(num_prof_users, mevshare_percentage=.9, pool2_price=1.0):
+def scenario_exhaustive(num_prof_users, kickback_percentage=.9, pool2_price=1.0):
     util_old = {}
     util_new = {}
     util_new_kickback = {}
@@ -2634,7 +3634,7 @@ def scenario_exhaustive(num_prof_users, mevshare_percentage=.9, pool2_price=1.0)
             for i in range(num_prof_users): 
                 username = f"user_{scenario}_{combo_name(c)}_{i}"
                 pref = preferences[username]
-                util_old[username] = utility(pref, accounts[username].tokens)
+                util_old[username] = utility([1.0,1.0], accounts[username].tokens)
                 #users only use chain1 
                 # txs[username] = make_trade(chain1, username, pref, optimal=True, static_value=100, scaled=False, accounts=accounts)
                 # txs[username] = make_trade(chain1, username, pref, optimal=False, static_value=100, scaled=True, accounts=accounts)
@@ -2676,9 +3676,9 @@ def scenario_exhaustive(num_prof_users, mevshare_percentage=.9, pool2_price=1.0)
             #calculate utility for user
             for i in range(num_prof_users): 
                 username = f"user_{scenario}_{combo_name(c)}_{i}"
-                util_new[username] = utility(preferences[username], accounts[username].tokens)
+                util_new[username] = utility([1.0,1.0], accounts[username].tokens)
                 print("utility b4 kickback", username, util_old[username], "->", util_new[username], f"({util_new[username] - util_old[username]})")
-                util_diff_avg_users[scenario][c] += util_new[username] - util_old[username]
+                util_diff_avg_users[scenario][c] += util_new[username] #- util_old[username]
             util_diff_avg_users[scenario][c] /= num_prof_users
 
             for i in range(num_prof_users):
@@ -2686,23 +3686,23 @@ def scenario_exhaustive(num_prof_users, mevshare_percentage=.9, pool2_price=1.0)
                 if 'prof' == scenario: #not no kickback prof
                     attacker_username=f"arbi_{scenario}_{combo_name(c)}"
                     profit = [accounts[attacker_username].tokens[0] - tokens[attacker_username][0], accounts[attacker_username].tokens[1] - tokens[attacker_username][1]]
-                    print(f"arbitrage profit {attacker_username} -> {username}: {[profit[0]/num_prof_users, profit[1]/num_prof_users]}")
+                    print(f"arbitrage profit {attacker_username} -> {username}: {[profit[0]*kickback_percentage/num_prof_users, profit[1]*kickback_percentage/num_prof_users]}")
                     accounts[username].tokens[0] += profit[0]/num_prof_users 
                     accounts[username].tokens[1] += profit[1]/num_prof_users
                 elif scenario == 'mevs':
                     attacker_username=f"arbi_{scenario}_{combo_name(c)}_{i}"
                     profit = [accounts[attacker_username].tokens[0] - tokens[attacker_username][0], accounts[attacker_username].tokens[1] - tokens[attacker_username][1]]
-                    print(f"arbitrage profit {attacker_username} -> {username}: {profit} * {mevshare_percentage} = {[profit[0]*mevshare_percentage, profit[1]*mevshare_percentage]}")
-                    accounts[username].tokens[0] += profit[0]*mevshare_percentage
-                    accounts[username].tokens[1] += profit[1]*mevshare_percentage
+                    print(f"arbitrage profit {attacker_username} -> {username}: {profit} * {kickback_percentage} = {[profit[0]*kickback_percentage, profit[1]*kickback_percentage]}")
+                    accounts[username].tokens[0] += profit[0]*kickback_percentage
+                    accounts[username].tokens[1] += profit[1]*kickback_percentage
 
             for i in range(num_prof_users): 
                 username = f"user_{scenario}_{combo_name(c)}_{i}"
-                util_new_kickback[username] = utility(preferences[username], accounts[username].tokens)
+                util_new_kickback[username] = utility([1.0,1.0], accounts[username].tokens)
                 if scenario != 'prof_nokickback':
                     print("utility w/ kickback", username, util_old[username], "->", util_new_kickback[username], f"({util_new_kickback[username] - util_old[username]})")
-                util_diff_avg_users_kickback[scenario][c] += util_new_kickback[username] - util_old[username]
-                util_diff_individual_users_kickback[scenario][i][c] += util_new_kickback[username] - util_old[username]
+                util_diff_avg_users_kickback[scenario][c] += util_new_kickback[username] #- util_old[username]
+                util_diff_individual_users_kickback[scenario][i][c] += util_new_kickback[username] #- util_old[username]
             util_diff_avg_users_kickback[scenario][c] /= num_prof_users
 
         print("\nuser,", "token,", "prof>,", "prof_nk>,", "prof,", "prof_nk,", "mevs")
@@ -2740,6 +3740,143 @@ def scenario_exhaustive(num_prof_users, mevshare_percentage=.9, pool2_price=1.0)
     print("prefer prof_nokickback\t",[f"{num_pure_profnk_users[c]}   " for c in range(len(combos))])
     print("prefer prof\t\t\t\t",[f"{num_pure_prof_users[c]}   " for c in range(len(combos))])
 
+def make_plots(data_files, num_iters=500, num_users=list(range(2,101)), random_type='max_demand', kickback_percentage=.9):
+    raw_data = {}
+    averages_data = {}
+    r = 2000
+    for d in data_files:
+        raw_data[d] = {}
+        for scenario in data_files[d]:
+            with open(data_files[d][scenario]) as f:
+                data = f.read()
+            raw_data[d][scenario] = [[float(y) for y in x.split(",") ] for x in data.strip().split("\n") if x != '']
+        
+        averages_data[d] = {}
+        for scenario in raw_data[d]:
+            if scenario == 'prof' and d == 2:
+                r = 0
+            last = 0
+            averages_data[d][scenario] = []
+            for user_num_index in range(len(num_users)):
+                user_num = num_users[user_num_index]
+                start = last
+                end = last + (num_iters*user_num) - 1
+                print(scenario,d,f"{user_num} users: raw_data[{start}]={raw_data[d][scenario][start][0]} to raw_data[{end}]={raw_data[d][scenario][end][0]}")
+                assert(raw_data[d][scenario][start][0] == float(user_num))
+                assert(raw_data[d][scenario][end][0] == float(user_num))
+                data_user = [raw_data[d][scenario][last + (i *user_num):last +  (i*user_num + user_num)] for i in range(num_iters)]
+                data_user = [[i[2] for i in d] for d in data_user]
+                averages_data[d][scenario].append(np.average(data_user, axis=1))
+                last += num_iters*user_num
+        # global figure_num
+        fig = plt.figure(figure_num)
+        ax = fig.add_subplot()
+        for scenario in averages_data[d]:
+            averages = np.average(averages_data[d][scenario],axis=1)
+            stds = np.std(averages_data[d][scenario],axis=1)
+            cis = confidence_interval(averages, stds, num_iters, alpha=.05, z=1.624)
+            ax.errorbar(num_users,averages, yerr=cis,  label = f"{scenario}-{random_type}")
+        ax.set_xlabel('number of users')
+        ax.set_ylabel('net utility')
+        plt.legend()
+        plt.title(f'{random_type} scale: {d}\n kickback percentage {int(kickback_percentage*100)}%\nconfidence: 90%,  num iterations: {num_iters} ')
+        # figure_num+=1
+
+def process_raw_data(data_files, num_iters=500, num_users=list(range(2,101)), random_type='max_demand',arb_type='',file_location='paper_data/'):
+    # data_files = {0.5: {'prof': 'paper_data/max_demand_0.5vol_prof_2to100users_1000iters_raw.csv', 'prof_nokickback': 'paper_data/max_demand_0.5vol_prof_nokickback_2to100users_1000iters_raw.csv', 'mevs': 'paper_data/max_demand_0.5vol_mevs_2to100users_1000iters_raw.csv'}, 1: {'prof': 'paper_data/max_demand_1vol_prof_2to100users_1000iters_raw.csv', 'prof_nokickback': 'paper_data/max_demand_1vol_prof_nokickback_2to100users_1000iters_raw.csv', 'mevs': 'paper_data/max_demand_1vol_mevs_2to100users_1000iters_raw.csv'}, 2: {'prof': 'paper_data/max_demand_2vol_prof_2to100users_1000iters_raw.csv', 'prof_nokickback': 'paper_data/max_demand_2vol_prof_nokickback_2to100users_1000iters_raw.csv', 'mevs': 'paper_data/max_demand_2vol_mevs_2to100users_1000iters_raw.csv'}, 4: {'prof': 'paper_data/max_demand_4vol_prof_2to100users_1000iters_raw.csv', 'prof_nokickback': 'paper_data/max_demand_4vol_prof_nokickback_2to100users_1000iters_raw.csv', 'mevs': 'paper_data/max_demand_4vol_mevs_2to100users_1000iters_raw.csv'}, 10: {'prof': 'paper_data/max_demand_10vol_prof_2to100users_1000iters_raw.csv', 'prof_nokickback': 'paper_data/max_demand_10vol_prof_nokickback_2to100users_1000iters_raw.csv', 'mevs': 'paper_data/max_demand_10vol_mevs_2to100users_1000iters_raw.csv'}}
+    # num_iters = 1000
+    # num_users=list(range(2,101))
+
+    raw_data = {}
+    averages_data = {}
+    for d in data_files:
+        raw_data[d] = {}
+        for scenario in data_files[d]:
+            with open(data_files[d][scenario]) as f:
+                data = f.read()
+            raw_data[d][scenario] = [[float(y) for y in x.split(",") ] for x in data.strip().split("\n") if x != '']
+        
+        averages_data[d] = {}
+        for scenario in raw_data[d]:
+            last = 0
+            averages_data[d][scenario] = []
+            # print(scenario, "raw_data", len(raw_data[scenario]))
+            # user_num = 2
+            # print(user_num, scenario,"start",raw_data[d][scenario][last + (0 *user_num):last + (0*user_num + user_num)])
+            # print(user_num, scenario, "end",raw_data[d][scenario][last + ((num_iters-1) *user_num):last + ((num_iters-1)*user_num + user_num)])        
+            for user_num_index in range(len(num_users)):
+                # print("usernum", user_num, "last", last)
+                user_num = num_users[user_num_index]
+                print(last,float(user_num),raw_data[d][scenario][last :last + user_num][0][0],raw_data[d][scenario][last + ((num_iters-1) *user_num_index):last +((num_iters-1)*user_num_index + user_num)][-1][0])
+                assert(raw_data[d][scenario][last :last + user_num][0][0] == float(user_num))
+                assert(raw_data[d][scenario][last + ((num_iters-1) *user_num_index):last +((num_iters-1)*user_num_index + user_num)][-1][0] == float(user_num))
+                data_user = [raw_data[d][scenario][last + (i *user_num):last +  (i*user_num + user_num)] for i in range(num_iters)]
+                data_user = [[i[2] for i in d] for d in data_user]
+                averages_data[d][scenario].append(list(np.average(data_user, axis=1)))
+                last += num_iters*user_num
+    import json
+    json.dump(averages_data, open(f"{file_location}averages_data_{arb_type}-{random_type}.json", "w"), indent = 2) 
+
+def make_paper_plots(arb_types, random_type, num_iters=500, num_users=list(range(2,101)), scenarios_list = ['prof', 'prof_nokickback', 'mevs'],file_location='paper_data/'):
+    import json
+    averages_data = {}
+    for at in arb_types:
+        averages_data[at] = json.load(open(f"{file_location}averages_data_{at}-{random_type}.json"))
+        print("averages_data",at, averages_data[at].keys())
+    fig = plt.figure()
+    gs = fig.add_gridspec(2, 2, hspace=.2, wspace=0)
+    (ax1, ax2), (ax3, ax4) = gs.subplots(sharex='col', sharey='row')
+    locations = [(.25,ax1), (.5,ax2), (.75,ax3), (1,ax4)]
+
+    # fig, axs = plt.subplots(2, 2, sharex=True, sharey=True)
+    # locations = [(.5,axs[0,0]), (1,axs[0,1]), (2,axs[1,0]), (4,axs[1,1])]
+
+    # fig.suptitle('Performance of PROF \n90% Confidence Interval, 1000 iterations')
+
+    scenario_labels = {'prof': 'PROF-Share', 'prof_nokickback': 'PROF', 'mevs': "MEV-Share"}
+    line_styles = ['solid', 'dotted']
+    assert(len(line_styles) >= len(list(averages_data.keys())))
+    line_colors = ['C0', 'C1', 'C2']
+    # assert(len(line_colors) >= len(list(averages_data[arb_types[0]].keys())))
+    for x in locations:
+        (d,subplot) = x
+        style_index=0
+        for at in averages_data:
+            color_index=0
+            for scenario in scenarios_list:
+                averages = np.average(averages_data[at][str(d)][scenario],axis=1)
+                # print("ranges",d,scenario,at,np.min(averages),np.max(averages))
+                # print("check",len(averages_data[at][d][scenario]), len(averages_data[at][d][scenario][0]), len(averages))
+                stds = np.std(averages_data[at][str(d)][scenario],axis=1)
+                cis = confidence_interval(averages, stds, num_iters, alpha=.05, z=1.624)
+                # ax.errorbar(num_users,averages, yerr=cis,  label = scenario_labels[scenario])
+                # print('color_index',color_index,scenario,'style_index',style_index, at)
+                subplot.errorbar(num_users, averages, yerr=cis,  label = f"{scenario_labels[scenario]}")#, color = line_colors[color_index], linestyle=line_styles[style_index])
+                # else:
+                    # subplot.errorbar(num_users, averages, yerr=cis,  color = line_colors[color_index], linestyle=line_styles[style_index])
+                subplot.set_title(f'Max Net Demand {int(d*100)}%')
+                subplot.set_xlabel('Number of Users')
+                subplot.set_ylabel('Average User Utility')
+                color_index+=1
+            style_index+=1
+    # for ax in axs.flat:
+        # ax.set(xlabel='Number of Users', ylabel='Difference in Utility')
+    # ax1.legend(["MEV-Share", 'PROF-Share', 'PROF'])
+    legend_labels = []
+    for at in averages_data:
+        for scenario in scenarios_list:
+            legend_labels.append(f"{scenario_labels[scenario]}")
+    fig.legend(legend_labels,loc="right")
+    # fig.legend(loc="right")
+
+    for ax in fig.get_axes():
+        ax.label_outer()
+    # # Hide x labels and tick labels for top plots and y ticks for right plots.
+    # for ax in axs.flat:
+        # ax.label_outer()
+    # fig.tight_layout()
+    plt.show()
+
 if __name__ == "__main__":
     # scenario_test_optimal_trade()
     # scenario_high_resource()
@@ -2757,27 +3894,16 @@ if __name__ == "__main__":
     # scenario_exhaustive(4, pool2_price=1.5)
     # exit(0)
   
+    # data_files_dexdex = {0.5: {'prof': 'paper_data2/dexdex_max_demand_0.5vol_prof_2to100-99users_1000iters_raw.csv_tmp', 'prof_nokickback': 'paper_data2/dexdex_max_demand_0.5vol_prof_nokickback_2to100-99users_1000iters_raw.csv_tmp', 'mevs': 'paper_data2/dexdex_max_demand_0.5vol_mevs_2to100-99users_1000iters_raw.csv_tmp'}, 1: {'prof': 'paper_data2/dexdex_max_demand_1vol_prof_2to100-99users_1000iters_raw.csv_tmp', 'prof_nokickback': 'paper_data2/dexdex_max_demand_1vol_prof_nokickback_2to100-99users_1000iters_raw.csv_tmp', 'mevs': 'paper_data2/dexdex_max_demand_1vol_mevs_2to100-99users_1000iters_raw.csv_tmp'}, 2: {'prof': 'paper_data2/dexdex_max_demand_2vol_prof_2to100-99users_1000iters_raw.csv_tmp', 'prof_nokickback': 'paper_data2/dexdex_max_demand_2vol_prof_nokickback_2to100-99users_1000iters_raw.csv_tmp', 'mevs': 'paper_data2/dexdex_max_demand_2vol_mevs_2to100-99users_1000iters_raw.csv_tmp'}, 4: {'prof': 'paper_data2/dexdex_max_demand_4vol_prof_2to100-99users_1000iters_raw.csv_tmp', 'prof_nokickback': 'paper_data2/dexdex_max_demand_4vol_prof_nokickback_2to100-99users_1000iters_raw.csv_tmp', 'mevs': 'paper_data2/dexdex_max_demand_4vol_mevs_2to100-99users_1000iters_raw.csv_tmp'}}
+    # data_files_dexdex = scenario_arbitrage_DEXDEX(file_location='paper_data/dexdex_',random_type='max_demand', volatilities=[.5,1,2,4], num_iters=1000, debug=True, users_range=list(range(2,101)), kickback_percentage=.9)
+    # print("data_files_dexdex =", data_files_dexdex)
+    # process_raw_data(data_files_dexdex, num_iters=1000, num_users=list(range(2,101)), arb_type='DEX-DEX', random_type='max_demand',file_location='paper_data/')
 
-    # scenario_arbitrage_users(random_type='random_walk_scale', volatilities=exponential_decay_function(.0001, 1.0001, 5), num_iters=500, debug=False, users_range=list(range(2,102,20)), mevshare_percentage=.9)
-    # scenario_arbitrage_users(random_type='random_walk_range', volatilities=list(range(1,6)), num_iters=500, debug=False, users_range=list(range(2,102,20)), mevshare_percentage=.9)
+    # data_files_cexdex = {0.5: {'prof': 'paper_data2/2cexdex_max_demand_0.5vol_prof_2to100-99users_1000iters_raw.csv', 'prof_nokickback': 'paper_data2/2cexdex_max_demand_0.5vol_prof_nokickback_2to100-99users_1000iters_raw.csv', 'mevs': 'paper_data2/2cexdex_max_demand_0.5vol_mevs_2to100-99users_1000iters_raw.csv'}, 1: {'prof': 'paper_data2/2cexdex_max_demand_1vol_prof_2to100-99users_1000iters_raw.csv', 'prof_nokickback': 'paper_data2/2cexdex_max_demand_1vol_prof_nokickback_2to100-99users_1000iters_raw.csv', 'mevs': 'paper_data2/2cexdex_max_demand_1vol_mevs_2to100-99users_1000iters_raw.csv'}, 2: {'prof': 'paper_data2/2cexdex_max_demand_2vol_prof_2to100-99users_1000iters_raw.csv', 'prof_nokickback': 'paper_data2/2cexdex_max_demand_2vol_prof_nokickback_2to100-99users_1000iters_raw.csv', 'mevs': 'paper_data2/2cexdex_max_demand_2vol_mevs_2to100-99users_1000iters_raw.csv'}, 4: {'prof': 'paper_data2/2cexdex_max_demand_4vol_prof_2to100-99users_1000iters_raw.csv', 'prof_nokickback': 'paper_data2/2cexdex_max_demand_4vol_prof_nokickback_2to100-99users_1000iters_raw.csv', 'mevs': 'paper_data2/2cexdex_max_demand_4vol_mevs_2to100-99users_1000iters_raw.csv'}}
+    # data_files_cexdex = scenario_arbitrage_CEXDEX(file_location='paper_data/cexdex_',random_type='max_demand', volatilities=[.25,.5,.75,1], num_iters=1000, debug=True, users_range=list(range(2,101)), kickback_percentage=.9)
+    # data_files_cexdex = {0.25: {'prof': 'paper_data/cexdex_max_demand_0.25vol_prof_2to100-99users_1000iters_raw.csv', 'prof_nokickback': 'paper_data/cexdex_max_demand_0.25vol_prof_nokickback_2to100-99users_1000iters_raw.csv', 'mevs': 'paper_data/cexdex_max_demand_0.25vol_mevs_2to100-99users_1000iters_raw.csv'}, 0.5: {'prof': 'paper_data/cexdex_max_demand_0.5vol_prof_2to100-99users_1000iters_raw.csv', 'prof_nokickback': 'paper_data/cexdex_max_demand_0.5vol_prof_nokickback_2to100-99users_1000iters_raw.csv', 'mevs': 'paper_data/cexdex_max_demand_0.5vol_mevs_2to100-99users_1000iters_raw.csv'}, 0.75: {'prof': 'paper_data/cexdex_max_demand_0.75vol_prof_2to100-99users_1000iters_raw.csv', 'prof_nokickback': 'paper_data/cexdex_max_demand_0.75vol_prof_nokickback_2to100-99users_1000iters_raw.csv', 'mevs': 'paper_data/cexdex_max_demand_0.75vol_mevs_2to100-99users_1000iters_raw.csv'}, 1: {'prof': 'paper_data/cexdex_max_demand_1vol_prof_2to100-99users_1000iters_raw.csv', 'prof_nokickback': 'paper_data/cexdex_max_demand_1vol_prof_nokickback_2to100-99users_1000iters_raw.csv', 'mevs': 'paper_data/cexdex_max_demand_1vol_mevs_2to100-99users_1000iters_raw.csv'}}
+    # print("data_files_cexdex =", data_files_cexdex)
+    # process_raw_data(data_files_cexdex, num_iters=1000, num_users=list(range(2,101)), arb_type='CEX-DEX', random_type='max_demand',file_location='paper_data/')
 
-    # scenario_arbitrage_users(random_type='random_walk_scaled', volatilities=exponential_decay_function(.0001, 1.0001, 5), num_iters=500, debug=False, users_range=[50], mevshare_percentage=.9)
-    # scenario_arbitrage_users(random_type='random_walk_range_relative', volatilities=exponential_decay_function(.0001, 5.0001, 5), num_iters=500, debug=False, users_range=[50], mevshare_percentage=.9)
-    # scenario_arbitrage_users(random_type='random_walk_range', volatilities=[round(x,0) for x in exponential_decay_function(1,51,10)], num_iters=500, debug=False, users_range=[50], mevshare_percentage=.9)
-
-    # scenario_arbitrage_users(random_type='rndm', volatilities=exponential_decay_function(.011, .012, 5), num_iters=1000, debug=False, users_range=[50], mevshare_percentage=.9)
-    # scenario_arbitrage_users(random_type='random_walk_scaled', volatilities=list(reversed(exponential_decay_function(.028, 0.03, 5))), num_iters=1000, debug=False, users_range=[50], mevshare_percentage=.9)
-
-
-
-    # scenario_arbitrage_users(random_type='rndm', volatilities=[.011], num_iters=1, debug=False, users_range=[2,3], mevshare_percentage=.9)
-    # scenario_arbitrage_users(random_type='rndm', volatilities=[.011], num_iters=500, debug=False, users_range=list(range(2,101)), mevshare_percentage=.9)
-    # scenario_arbitrage_users(random_type='random_walk_scaled', volatilities=[.029], num_iters=500, debug=False, users_range=list(range(2,101)), mevshare_percentage=.9)
-
-
-    scenario_arbitrage_users(random_type='random_walk_scaled', volatilities=[.029], num_iters=50, debug=False, users_range=[50,60], mevshare_percentage=.9)
-    scenario_arbitrage_users(random_type='random_walk_scaled', volatilities=[.029], num_iters=100, debug=False, users_range=[50,60], mevshare_percentage=.9)
-    scenario_arbitrage_users(random_type='random_walk_scaled', volatilities=[.029], num_iters=500, debug=False, users_range=[50,60], mevshare_percentage=.9)
-    
-
+    make_paper_plots(arb_types=['CEX-DEX'], random_type='max_demand', num_iters=1000, num_users=list(range(2,101)),file_location='paper_data/')
     plt.show()
